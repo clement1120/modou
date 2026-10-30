@@ -353,7 +353,8 @@ final class LocalImport {
 
     /** 章节收集 + 分批入库：写完的正文立刻丢掉引用，峰值只有一批 */
     private static final class Writer implements TxtBook.Sink, EpubBook.Sink {
-        private static final int BATCH_CHARS = 1200000;
+        // 1.2M→1.6M：每本少约 1/3 的写库往返（内容仍是流式、峰值不变）
+        private static final int BATCH_CHARS = 1600000;
 
         private final ModouStore store;
         private final String id;
