@@ -50,13 +50,25 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: 安装 Android SDK
-        uses: android-actions/setup-android@v3
+      # android-actions/setup-android 的 sdkmanager 装不了 'tools' 包（已从 Google 仓库移除），
+      # 直接下载 build-tools 34 + platform 34 两个 zip 解包，和本地 .toolchain 同一套做法
+      - name: 安装 Android SDK（build-tools 34 + platform 34）
+        run: |
+          mkdir -p "$HOME/android-sdk"
+          curl -sSL -o bt.zip https://dl.google.com/android/repository/build-tools_r34-linux.zip
+          curl -sSL -o pl.zip https://dl.google.com/android/repository/platform-34-ext7_r03.zip
+          unzip -q bt.zip -d "$HOME/android-sdk"
+          unzip -q pl.zip -d "$HOME/android-sdk"
+          cd "$HOME/android-sdk"
+          mkdir -p build-tools platforms licenses
+          mv android-14 build-tools/34.0.0
+          mv android-34 platforms/android-34
+          printf '24333f8a63b6825ea9c5514fa83cbd4b2bf6c9f\n' > licenses/android-sdk-license
 
       - name: 构建
         working-directory: android
         run: |
-          echo "sdk.dir=$ANDROID_SDK_ROOT" > local.properties
+          echo "sdk.dir=$HOME/android-sdk" > local.properties
           bash gradlew :app:assembleDebug --no-daemon
 
       - name: 上传 APK
