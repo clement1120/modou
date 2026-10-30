@@ -113,7 +113,7 @@ public class LocalBooksActivity extends Activity {
         if (!TextUtils.isEmpty(old) && !old.equals(uri.toString())) dropOldPermission(c, old);
         try {
             c.getContentResolver().takePersistableUriPermission(uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
         } catch (Exception ignore) {
             /* 部分 ROM 不给长期授权：本次能用就行，下次再选 */
         }
@@ -127,6 +127,7 @@ public class LocalBooksActivity extends Activity {
         try {
             Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
             i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                     | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
             a.startActivityForResult(i, REQ_TREE);
             return true;

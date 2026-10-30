@@ -329,6 +329,16 @@ public class ImportActivity extends Activity {
             for (int i = 0; i < cd.getItemCount(); i++) uris.add(cd.getItemAt(i).getUri());
         }
         if (uris.isEmpty()) return;
+        // 长久写权限：编辑本章保存时要写回原文件；不拿的话下次进 App
+        // 就只剩只读（openOutputStream 直接抛 SecurityException）
+        for (Uri u : uris) {
+            try {
+                getContentResolver().takePersistableUriPermission(u,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            } catch (Exception ignore) {
+                /* 部分 ROM / provider 不给长期授权：本次能用就行 */
+            }
+        }
         importFiles(uris);
     }
 

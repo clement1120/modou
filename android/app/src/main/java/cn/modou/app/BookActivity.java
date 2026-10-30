@@ -16,6 +16,8 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ScrollView;
+
+import java.net.HttpURLConnection;
 import android.widget.TextView;
 
 import org.json.JSONArray;
@@ -773,9 +775,14 @@ public class BookActivity extends Activity {
 
         TextView search = ModouUi.tv(this, "在线搜封面", 14, ui.accent);
         search.setPadding(0, ModouUi.dp(this, 8), 0, ModouUi.dp(this, 8));
-        search.setOnClickListener((x) -> searchCovers(this, name.getText().toString().trim(), urls -> {
+        search.setOnClickListener((x) -> searchCovers(this, name.getText().toString().trim(), () -> {
+            search.setText("搜索封面中…");
+            search.setEnabled(false);
+        }, urls -> {
+            search.setText("在线搜封面");
+            search.setEnabled(true);
             if (urls.isEmpty()) {
-                ModouUi.toast(BookActivity.this, "没搜到可用封面");
+                ModouUi.toast(BookActivity.this, "没搜到可用封面，可手动填封面 URL");
                 return;
             }
             showCoverCandidates(urls, (url) -> {
@@ -868,40 +875,138 @@ public class BookActivity extends Activity {
     }
 
     /**
-     * 按书名在线搜封面候选（委托书源服务，对齐网页版 fetchCovers）。
-     * 结果结构：res.groups[].hits[].book.coverUrl。
+     * 按书名搜封面：**书源搜索 + Bing 图片搜索两路合并兜底**，结果去重后回调。
+     *
+     * 为什么加 Bing 兜底：书源搜索结果的 coverUrl 经常是空的（很多书源搜索接口
+     * 只回书名/作者/最新章节，不带封面字段），老逻辑因此「点一下立刻没搜到」——
+     * 不是没搜，是根本没东西可搜。对齐 Legado 的做法：书源没有就给一次网络图片搜索。
+     *
+     * started 在真正开始搜索前回调（主线程），调用方可把按钮切成「搜索中…」；
+     * 两路都在 15 秒内收敛（书源 60s 超时窗口内提前收敛、Bing 8s 超时），回调只发一次。
      * 复用于书架内的编辑（ShelfActivity.pickCover）与书籍详情页（editBook）。
      */
     static void searchCovers(Activity a, String name, CoverCb cb) {
-        SourceService svc = SourceService.get();
-        if (svc == null) {
-            a.runOnUiThread(() -> cb.on(new ArrayList<>()));
-            return;
-        }
-        svc.search(name, null, 1, new SourceService.Callback() {
+        searchCovers(a, name, null, cb);
+    }
+
+    static void searchCovers(Activity a, String name, Runnable started, CoverCb cb) {
+        final List<String> src = new ArrayList<>();
+        final List<String> web = new ArrayList<>();
+        final boolean[] srcDone = {false};
+        final boolean[] webDone = {false};
+        if (started != null) a.runOnUiThread(started);
+
+        // 两路都收敛后合并回调一次：书源优先，Bing 补位，去重、最多 12 张
+        final java.util.concurrent.atomic.AtomicBoolean sent = new java.util.concurrent.atomic.AtomicBoolean();
+        final Runnable maybe = new Runnable() {
             @Override
-            public void onDone(JSONObject res) {
-                List<String> urls = new ArrayList<>();
-                JSONArray groups = res == null ? null : res.optJSONArray("groups");
-                if (groups != null) {
-                    for (int i = 0; i < groups.length(); i++) {
-                        JSONObject grp = groups.optJSONObject(i);
-                        if (grp == null) continue;
-                        JSONArray hits = grp.optJSONArray("hits");
-                        if (hits == null) continue;
-                        for (int j = 0; j < hits.length(); j++) {
-                            JSONObject hit = hits.optJSONObject(j);
-                            if (hit == null) continue;
-                            JSONObject b = hit.optJSONObject("book");
-                            String u = b == null ? "" : b.optString("coverUrl", "");
-                            if (!u.isEmpty() && !urls.contains(u)) urls.add(u);
-                        }
-                    }
+            public void run() {
+                if (!srcDone[0] || !webDone[0]) return;
+                if (!sent.compareAndSet(false, true)) return;
+                final List<String> out = new ArrayList<>();
+                for (String u : src) {
+                    if (u != null && !u.isEmpty() && !out.contains(u)) out.add(u);
                 }
-                final List<String> out = urls;
+                for (String u : web) {
+                    if (u != null && !u.isEmpty() && !out.contains(u) && out.size() < 12) out.add(u);
+                }
                 a.runOnUiThread(() -> cb.on(out));
             }
-        });
+        };
+
+        // 路 1：启用书源搜（结果结构 res.groups[].hits[].book.coverUrl）
+        SourceService svc = SourceService.get();
+        if (svc == null) {
+            srcDone[0] = true;
+        } else {
+            svc.search(name, null, 1, new SourceService.Callback() {
+                @Override
+                public void onDone(JSONObject res) {
+                    JSONArray groups = res == null ? null : res.optJSONArray("groups");
+                    if (groups != null) {
+                        for (int i = 0; i < groups.length(); i++) {
+                            JSONObject grp = groups.optJSONObject(i);
+                            if (grp == null) continue;
+                            JSONArray hits = grp.optJSONArray("hits");
+                            if (hits == null) continue;
+                            for (int j = 0; j < hits.length(); j++) {
+                                JSONObject hit = hits.optJSONObject(j);
+                                if (hit == null) continue;
+                                JSONObject b = hit.optJSONObject("book");
+                                String u = b == null ? "" : b.optString("coverUrl", "");
+                                if (!u.isEmpty() && !src.contains(u)) src.add(u);
+                            }
+                        }
+                    }
+                    srcDone[0] = true;
+                    maybe.run();
+                }
+            });
+        }
+
+        // 路 2：Bing 图片搜索兜底（后台线程，8s 超时）
+        Thread t = new Thread(() -> {
+            try {
+                web.addAll(bingCovers(name));
+            } catch (Exception ignore) {
+                /* 兜底失败不阻塞书源结果 */
+            }
+            webDone[0] = true;
+            maybe.run();
+        }, "modou-cover");
+        t.setDaemon(true);
+        t.start();
+
+    }
+
+    /** 按书名从 Bing 图片搜索抓候选封面（零依赖：纯 HttpURLConnection + 正则） */
+    static List<String> bingCovers(String name) throws Exception {
+        List<String> out = new ArrayList<>();
+        if (name == null || name.trim().isEmpty()) return out;
+        String q = java.net.URLEncoder.encode(name.trim(), "UTF-8");
+        java.net.URL u = new java.net.URL(
+                "https://www.bing.com/images/search?q=" + q + "&qft=+filterui:imagesize-large");
+        HttpURLConnection c = (HttpURLConnection) u.openConnection();
+        c.setConnectTimeout(8000);
+        c.setReadTimeout(8000);
+        c.setRequestProperty("User-Agent",
+                "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Mobile Safari/537.36");
+        c.setRequestProperty("Accept-Language", "zh-CN,zh;q=0.9");
+        try {
+            int code = c.getResponseCode();
+            if (code != 200) return out;
+            // m="{...murl:"..."...}"：HTML 里是 &quot; 转义，个别时候是原生双引号，两种都试
+            java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+                    "murl&quot;:&quot;(.*?)&quot;|murl\":\"(.*?)\"");
+            StringBuilder sb = new StringBuilder();
+            try (java.io.InputStream in = c.getInputStream()) {
+                byte[] buf = new byte[8192];
+                int n;
+                int cap = 4 * 1024 * 1024;
+                int total = 0;
+                while ((n = in.read(buf)) > 0 && total < cap) {
+                    sb.append(new String(buf, 0, n, "UTF-8"));
+                    total += n;
+                }
+            }
+            java.util.regex.Matcher m = p.matcher(sb.toString());
+            while (m.find() && out.size() < 9) {
+                String url = m.group(1) != null ? m.group(1) : m.group(2);
+                if (url == null) continue;
+                url = url.replace("\\u0026", "&");
+                url = unescapeHtml(url);
+                if (!url.startsWith("http")) continue;
+                if (!out.contains(url)) out.add(url);
+            }
+        } finally {
+            c.disconnect();
+        }
+        return out;
+    }
+
+    static String unescapeHtml(String s) {
+        return s.replace("&amp;", "&").replace("&quot;", "\"").replace("&#39;", "'")
+                .replace("&lt;", "<").replace("&gt;", ">").replace("&nbsp;", " ");
     }
 
     /** 封面搜索回调：回调一个候选 URL 列表（可能为空） */
