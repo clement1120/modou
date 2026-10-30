@@ -1,13 +1,14 @@
 /**
  * settings.js — 设置：正文净化 / 章节缓存 / 数据 / 关于（M5：导入备份 + 阅读统计）
  */
-import { state, reloadReplaceRules, getReadStats, toast, confirmBox, saveAppTheme } from './app.js';
+import { state, reloadReplaceRules, getReadStats, toast, confirmBox, saveAppTheme, saveAnimGrade } from './app.js';
 import { settings, db } from '../db.js';
 import { $, h, openModal, saveFile } from './dom.js';
 import { openReplaceSheet } from './replace.js';
 
 export async function renderSettings(view) {
   const curTheme = await settings.get('appTheme', 'light');
+  const curAnim = await settings.get('uiAnimGrade', 2);
   view.innerHTML = `
     <div class="page-head"><div><h1>设置</h1><p class="muted">外观 · 净化 · 缓存 · 数据</p></div></div>
 
@@ -18,6 +19,16 @@ export async function renderSettings(view) {
         <button type="button" data-mode="light" class="${curTheme === 'light' ? 'on' : ''}">浅色</button>
         <button type="button" data-mode="dark" class="${curTheme === 'dark' ? 'on' : ''}">深色</button>
         <button type="button" data-mode="auto" class="${curTheme === 'auto' ? 'on' : ''}">跟随系统</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="sec-head"><h3>动效</h3><span class="muted small">过渡动画强度（MD3 标准 / 简约 / 关闭）</span></div>
+      <p class="muted small">「标准」为 MD3 emphasized 曲线 + 抽屉上滑 + 按钮微反馈；「关闭」适合低配设备，翻页与弹层直接切换、不播放动画。</p>
+      <div class="seg" id="anim-seg" style="margin-top:10px">
+        <button type="button" data-anim="0" class="${curAnim === 0 ? 'on' : ''}">关闭</button>
+        <button type="button" data-anim="1" class="${curAnim === 1 ? 'on' : ''}">简约</button>
+        <button type="button" data-anim="2" class="${curAnim === 2 ? 'on' : ''}">标准</button>
       </div>
     </div>
 
@@ -94,6 +105,16 @@ export async function renderSettings(view) {
       seg.querySelectorAll('button').forEach((x) => x.classList.remove('on'));
       b.classList.add('on');
       saveAppTheme(b.dataset.mode);
+    };
+  });
+
+  // 动效三档：关闭 / 简约 / MD3 标准
+  const aseg = $('#anim-seg');
+  aseg.querySelectorAll('button').forEach((b) => {
+    b.onclick = () => {
+      aseg.querySelectorAll('button').forEach((x) => x.classList.remove('on'));
+      b.classList.add('on');
+      saveAnimGrade(Number(b.dataset.anim));
     };
   });
 

@@ -76,7 +76,20 @@ const onSystemTheme = (dark) => {
   if (appThemeMode === 'auto') paintDocTheme();
 };
 if (typeof window !== 'undefined') window.__modouSystemTheme = onSystemTheme;
+/** 动效三档（对齐 legado-with-MD3 的动画等级设计）：
+ *  0 关闭 / 1 简约（仅淡入淡出）/ 2 MD3 标准（emphasized 曲线 + 抽屉上滑 + 微反馈）。
+ *  值存在设置表，WebView 与原生阅读页各读一份。 */
+export const applyAnimGrade = (grade) => {
+  const g = [0, 1, 2].includes(Number(grade)) ? Number(grade) : 2;
+  if (typeof document !== 'undefined') document.body.dataset.anim = ['off', 'simple', 'md3'][g];
+  return g;
+};
+export const saveAnimGrade = (grade) => {
+  applyAnimGrade(grade);
+  return settings.set('uiAnimGrade', grade);
+};
 export async function initAppTheme() {
+  applyAnimGrade(await settings.get('uiAnimGrade', 2));
   const m = await settings.get('appTheme', 'light');
   appThemeMode = m === 'dark' || m === 'auto' ? m : 'light';
   refreshSystemDark();

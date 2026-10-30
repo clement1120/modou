@@ -1,19 +1,29 @@
-/* styles.css — 墨读 M5（纸墨设计：纸底 · 墨字 · 朱砂；去玻璃拟态 / 去渐变 / 去光斑） */
+/* styles.css — 墨读 M6（纸墨设计对齐 MD3：纸米色底 · 墨字 · 朱砂；去玻璃拟态 / 去渐变 / 去光斑） */
 :root{
-  --bg:#F5F0E2; --bg2:#EDE6D3;
+  --bg:#FBF5EB; --bg2:#F4ECDD;
   --text:#2B251B; --text2:#6F6655; --text3:#A79C84;
-  --card:#FCF8EE; --line:#E2D9C4; --line2:#D3C7AC;
+  --card:#FFFDF7; --line:#E8DECB; --line2:#D8CCB2;
   --acc:#AE4A2C; --acc-deep:#93402A; --acc-soft:rgba(174,74,44,.09);
   --danger:#A8433A; --ok:#5E6B5A;
-  --sh:0 1px 2px rgba(62,52,25,.04),0 10px 28px rgba(62,52,25,.08);
+  /* MD3 三级海拔：卡片 / 抽屉 / 浮层 */
+  --sh:0 1px 2px rgba(62,52,25,.05),0 10px 28px rgba(62,52,25,.09);
+  --sh2:0 2px 4px rgba(62,52,25,.06),0 16px 40px rgba(62,52,25,.13);
+  --sh3:0 4px 10px rgba(62,52,25,.08),0 24px 64px rgba(62,52,25,.18);
   --r-lg:28px; --r-md:20px; --r-sm:14px;
   --serif:"Noto Serif SC","Source Han Serif SC","Songti SC","STSong","SimSun",serif;
   --sans:-apple-system,BlinkMacSystemFont,"PingFang SC","HarmonyOS Sans SC","MiSans","Microsoft YaHei",sans-serif;
-  --flow:cubic-bezier(.22,1,.36,1);
-  --spring:cubic-bezier(.34,1.56,.64,1);
+  /* MD3 emphasized：进入 250ms、退出 200ms、强调过渡 300ms */
+  --flow:cubic-bezier(.2,0,0,1);
+  --spring:cubic-bezier(.2,0,0,1);
   /* 阅读主题（纸白为默认） */
   --rbg:#F6F1E5; --rtext:#2B251B; --rline:#E4DCC8;
 }
+/* 动效三档（设置页 uiAnimGrade：0 关闭 / 1 简约 / 2 MD3 标准）
+   data-anim 由 app.js 从设置读出后挂在 body 上 */
+body[data-anim="off"] *, body[data-anim="off"] *::before, body[data-anim="off"] *::after{transition:none!important;animation:none!important}
+body[data-anim="off"] html{scroll-behavior:auto}
+body[data-anim="simple"] .sheet, body[data-anim="simple"] .drawer{animation:md3Fade .15s var(--flow)}
+body[data-anim="simple"] .rd-act, body[data-anim="simple"] .rd-prog{transition:opacity .15s var(--flow)}
 [data-theme="dark"]{
   --bg:#1B1A17; --bg2:#131210;
   --text:#EDE7D8; --text2:#A89F8A; --text3:#7A7160;
@@ -34,6 +44,11 @@
 [data-theme="dark"] select{
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 12 8'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%23A89F8A' stroke-width='1.8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 }
+/* MD3 过渡曲线：底部抽屉上滑 / 遮罩淡入（对齐 legado-with-MD3 节奏） */
+@keyframes md3SheetIn{from{transform:translateY(26px);opacity:.35}to{transform:none;opacity:1}}
+@keyframes md3Fade{from{opacity:.4}to{opacity:1}}
+@keyframes md3Pop{from{transform:scale(.96);opacity:.6}to{transform:none;opacity:1}}
+.sheet-overlay{animation:md3Fade .2s var(--flow)}
 /* 进度滑块在暗色轨道用浅点，保证可见 */
 [data-theme="dark"] .rd-track{background:rgba(200,196,183,.18)}
 [data-theme="dark"] .rd-fill{background:var(--acc-deep)}
@@ -156,6 +171,10 @@ h3{font-size:15px;font-family:var(--serif)}
 }
 .mini:hover{color:var(--acc);background:var(--acc-soft)}
 .mini:active{transform:scale(.93)}
+.card,.chip-check,.pick-item,.opt-item,.src-card,.bf-item,.book-card,.row-item,.opt-list button,
+.group-chip,.bm-item,.dw-item,.src-card:not(.disabled){transition:transform .12s var(--flow),box-shadow .22s var(--flow),background .22s var(--flow),border-color .22s var(--flow)}
+.card:active,.chip-check:active,.pick-item:active,.opt-item:active,.src-card:not(.disabled):active,
+.book-card:active,.group-chip:active,.bm-item:active,.dw-item:active{transform:scale(.985)}
 .mini.danger{color:var(--danger)}
 .mini.danger:hover{background:rgba(168,67,58,.12)}
 .card{

@@ -218,6 +218,11 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
      * 上一版是 30，加上页尾那条被当成正文的段距空行，视觉上底部空出一整行多。
      */
     private static final int BOT_GAP_DP = 24;
+    /** MD3 emphasized（强调过渡）/ decelerate（进入）：与网页版 --flow 同一条曲线 */
+    private static final android.view.animation.Interpolator MD3_EMPH =
+            new android.view.animation.PathInterpolator(0.2f, 0f, 0f, 1f);
+    private static final android.view.animation.Interpolator MD3_DECEL =
+            new android.view.animation.PathInterpolator(0.05f, 0.7f, 0.1f, 1f);
     private String font = "song";
     private int weightVal = 500;         // 300/400/500/600
     private String lightTheme = "paper"; // paper/cream/gray
@@ -228,6 +233,8 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
 
     /** 翻页方式：false 左右翻页 / true 上下滚动（网页版 readerPageMode） */
     private boolean scrollMode = false;
+    /** 动效三档：0 关闭 / 1 简约（仅淡入）/ 2 MD3 标准（emphasized 上滑 + 微反馈） */
+    private int animGrade = 2;
     /** 页眉：0 不显示 / 1 章节名 / 2 书名 / 3 书名+章节 */
     private int headMode = 1;
     /** 状态栏高度（px）：先取系统资源，拿到真实窗口 inset 后再修正 */
@@ -361,6 +368,12 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         brightness = 1.0f;
         // 翻页方式与页眉页脚：与网页版共用同一组设置键，网页里改过的设置原生要能接上
         scrollMode = "scroll".equals(ModouStore.get(this).settingStr("readerPageMode", "page"));
+        try {
+            animGrade = Integer.parseInt(ModouStore.get(this).settingStr("uiAnimGrade", "2"));
+        } catch (Exception e) {
+            animGrade = 2;
+        }
+        if (animGrade < 0 || animGrade > 2) animGrade = 2;
         readHeadFoot();
         // 全局深浅决定阅读页是深色还是浅色；阅读页只额外记「浅色用哪种纸色」
         darkMode = ModouUi.isDark(this);
@@ -3369,18 +3382,41 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         overlay = wrap;
 
-        panel.setTranslationY(dp(60));
-        wrap.setAlpha(0f);
-        wrap.animate().alpha(1f).setDuration(180).start();
-        panel.animate().translationY(0f).setDuration(220).start();
+        if (animGrade == 0) {
+            // 关闭动效：直接到位，不做任何动画（低配设备 / 用户明确关闭）
+            wrap.setAlpha(1f);
+            panel.setTranslationY(0f);
+        } else if (animGrade == 1) {
+            // 简约：只淡入，不上滑
+            wrap.setAlpha(0f);
+            panel.setTranslationY(0f);
+            wrap.animate().alpha(1f).setDuration(140).setInterpolator(MD3_DECEL).start();
+        } else {
+            // MD3 标准：遮罩 180ms decelerate + 抽屉 260ms emphasized
+            panel.setElevation(dp(16));
+            panel.setTranslationY(dp(60));
+            wrap.setAlpha(0f);
+            wrap.animate().alpha(1f).setDuration(180).setInterpolator(MD3_DECEL).start();
+            panel.animate().translationY(0f).setDuration(260).setInterpolator(MD3_EMPH).start();
+        }
     }
 
     private void closeSheet() {
         typoShowing = false;
         if (overlay == null) return;
-        View o = overlay;
+        final View o = overlay;
+        if (animGrade == 0) {
+            overlay = null;
+            root.removeView(o);
+            return;
+        }
+        // 退出用 emphasized-accelerate（200ms）：先淡出再移除，避免生硬消失
         overlay = null;
-        root.removeView(o);
+        o.animate().alpha(0f).setDuration(animGrade == 2 ? 200 : 120)
+                .setInterpolator(animGrade == 2 ? MD3_EMPH : MD3_DECEL)
+                .withEndAction(() -> {
+                    if (o.getParent() != null) root.removeView(o);
+                }).start();
     }
 
     /** 更多：加入书架 / 书籍详情 / 重新加载本章 / 设置 / 回到本章开头 / 退出原生阅读 */
@@ -3606,6 +3642,15 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
                 scrollMode ? 1 : 0, i -> {
                     scrollMode = i == 1;
                     applyStyleNow();
+                }));
+        box.addView(div());
+
+        // 动效三档：0 关闭 / 1 简约 / 2 MD3 标准（与设置页同键，立即生效）
+        box.addView(segRow("动效", new String[]{"关闭", "简约", "标准"},
+                animGrade, i -> {
+                    animGrade = i;
+                    ModouStore.get(this).putSettingStr("uiAnimGrade", String.valueOf(i));
+                    ModouUi.toast(this, i == 0 ? "动效已关闭" : i == 1 ? "动效：简约" : "动效：MD3 标准");
                 }));
         box.addView(div());
 
