@@ -5,6 +5,10 @@ on:
     branches: [main, fix/storage-source-check-memory, feature/md3-panel-web-render, feat/ci-cover-perf]
   pull_request:
 
+# 上传 Release 资产需要写权限
+permissions:
+  contents: write
+
 jobs:
   test:
     name: JS 引擎 + UI 冒烟
@@ -77,3 +81,21 @@ jobs:
           name: modou-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # 更新 Latest-Debug Release（共用上面这次构建，不重复打包）。
+      # 只在推送到 main 时发布：PR 只构建、不碰 Release，避免每条 PR 都覆盖正式产物。
+      # tag 不存在时自动新建，存在则覆盖同名 APK 资产。
+      - name: 更新 Latest-Debug Release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: Latest-Debug
+          name: 墨读 Latest-Debug（自动构建）
+          body: |
+            由 CI 在每次推送到 main 时自动打包并覆盖上传。
+            基于最新 main 代码构建的 debug 安装包，可直接覆盖安装。
+          files: android/app/build/outputs/apk/debug/app-debug.apk
+          make_latest: true
+          append_body: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

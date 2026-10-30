@@ -202,11 +202,11 @@ final class ModouUi {
      * 和网页版一比就像没设计过。统一改用这套组件。
      */
 
-    /** 组容器：圆角 14 的实底卡片，内部不加 padding（行自己留白） */
+    /** 组容器：圆角取 M3 中档 {@link ModouTokens#CORNER_M} 的实底卡片，内部不加 padding（行自己留白） */
     LinearLayout groupCard(Context c) {
         LinearLayout l = new LinearLayout(c);
         l.setOrientation(LinearLayout.VERTICAL);
-        l.setBackground(round(card, 14));
+        l.setBackground(round(card, ModouTokens.CORNER_M));
         return l;
     }
 
@@ -219,7 +219,8 @@ final class ModouUi {
         LinearLayout l = new LinearLayout(c);
         l.setOrientation(LinearLayout.HORIZONTAL);
         l.setGravity(Gravity.CENTER_VERTICAL);
-        l.setPadding(dp(c, 14), dp(c, 11), dp(c, 14), dp(c, 11));
+        l.setPadding(dp(c, ModouTokens.ROW_PAD_H), dp(c, ModouTokens.ROW_PAD_V),
+                dp(c, ModouTokens.ROW_PAD_H), dp(c, ModouTokens.ROW_PAD_V));
 
         LinearLayout left = new LinearLayout(c);
         left.setOrientation(LinearLayout.VERTICAL);
@@ -254,9 +255,9 @@ final class ModouUi {
         View v = new View(c);
         v.setBackgroundColor(alpha(u.line, 0xFF));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(c, 1)));
-        lp.leftMargin = dp(c, 14);
-        lp.rightMargin = dp(c, 14);
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(c, ModouTokens.DIVIDER)));
+        lp.leftMargin = dp(c, ModouTokens.ROW_PAD_H);
+        lp.rightMargin = dp(c, ModouTokens.ROW_PAD_H);
         v.setLayoutParams(lp);
         return v;
     }
@@ -327,7 +328,7 @@ final class ModouUi {
     private static GradientDrawable rowBg(Context c, ModouUi u) {
         GradientDrawable g = new GradientDrawable();
         g.setColor(u.dark ? 0x1AFFFFFF : 0x0F000000);
-        g.setCornerRadius(dp(c, 8));
+        g.setCornerRadius(dp(c, ModouTokens.CORNER_S));
         return g;
     }
 
@@ -436,15 +437,16 @@ final class ModouUi {
         panel.setOrientation(LinearLayout.VERTICAL);
         GradientDrawable bg = new GradientDrawable();
         bg.setColor(u.card);
-        bg.setCornerRadius(dp(a, 22));
-        bg.setStroke(Math.max(1, dp(a, 1)), alpha(u.text, 0x14));
+        bg.setCornerRadius(dp(a, ModouTokens.CORNER_L));
+        bg.setStroke(Math.max(1, dp(a, ModouTokens.DIVIDER)), alpha(u.text, 0x14));
         panel.setBackground(bg);
-        panel.setPadding(dp(a, 16), dp(a, 10), dp(a, 16), dp(a, 12));
+        panel.setPadding(dp(a, ModouTokens.PANEL_PAD_H), dp(a, ModouTokens.PANEL_PAD_T),
+                dp(a, ModouTokens.PANEL_PAD_H), dp(a, ModouTokens.PANEL_PAD_B));
 
         View grab = new View(a);
         GradientDrawable gb = new GradientDrawable();
         gb.setColor(alpha(u.text, 0x26));
-        gb.setCornerRadius(dp(a, 2));
+        gb.setCornerRadius(dp(a, ModouTokens.CORNER_XS));
         grab.setBackground(gb);
         LinearLayout.LayoutParams glp =
                 new LinearLayout.LayoutParams(dp(a, 36), dp(a, 4));

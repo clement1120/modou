@@ -616,7 +616,8 @@ final class NativePageView extends View {
         this.pendingLast = offset == Integer.MAX_VALUE;
         this.pendingOffset = pendingLast ? -1 : offset;
         clearSelInternal();
-        this.text = buildContent(getWidth() - padL - padR);
+        // 图文排版交给 relayout 统一做一次：它先按整字格校准版心宽度，
+        // 再据此量插图占位。这里预先排一次等于白排（用的是上一章的版心）。
         relayout();
         invalidate();
         loadImages();
@@ -632,7 +633,7 @@ final class NativePageView extends View {
         this.pendingLast = offset == Integer.MAX_VALUE;
         this.pendingOffset = pendingLast ? -1 : offset;
         clearSelInternal();
-        this.text = buildContent(getWidth() - padL - padR);
+        // 同上：图文排版只在 relayout 里做一次，这里不要抢先排
         relayout();
         invalidate();
         loadImages();
@@ -1012,7 +1013,7 @@ final class NativePageView extends View {
     private void relayoutImages() {
         int keep = layout != null && pStart.length > 0 ? pageStartOffset() : 0;
         this.pendingOffset = keep;
-        this.text = buildContent(getWidth() - padL - padR);
+        // 同上：图到了之后由 relayout 统一重排一次，这里不再抢先排一遍
         relayout();
         invalidate();
     }
