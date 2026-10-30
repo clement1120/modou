@@ -32,6 +32,9 @@ const CHECK_REQUEST_TIMEOUT_MS = 12000;
 const CHECK_THREADS = 4;
 const CHECK_CONTENT_CHAPTERS = 2;
 const checkArtifacts = new Map(); // 快速校验产物，深度校验复用，避免重复请求
+/** 本次体检要跑的档位（对齐 Legado 的 checkSearch/checkInfo/checkToc/checkContent 五档，
+ *  modou 无发现页故为四档）。弹层勾选后写入；单源弹窗的勾选会持久化到书源记录。 */
+let curTiers = { checkSearch: true, checkInfo: true, checkToc: true, checkContent: true };
 
 /** 失败原因压成一行，别把整段堆栈塞进 toast/相机 */
 const brief = (e) => String((e && e.message) || e || '').replace(/\s+/g, ' ').slice(0, 120);
@@ -274,6 +277,39 @@ function renderList() {
   updateSelBar();
 }
 
+/** 上次校验结果（持久化在书源记录里，进页面直接可见，不用重跑） */
+function lastCheckTag(s) {
+  const lc = s.lastCheck;
+  if (!lc || !lc.t) return '';
+  const d = new Date(lc.t);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const st = lc.state === 'ok' ? '有效' : lc.state === 'bad' ? '失效' : '跳过';
+  return `<span class="src-last" data-st="${esc(lc.state || '')}">上次 ${hh}:${mm} ${st}</span>`;
+}
+
+/** 校验完成时即时刷新卡片上的「上次校验」标签，不用等整列表重渲染 */
+function paintLastCheck(src) {
+  if (typeof document === 'undefined') return;
+  const card = document.querySelector(
+    `.src-card[data-url="${CSS.escape(src.bookSourceUrl)}"][data-name="${CSS.escape(src.bookSourceName || '')}"]`
+  );
+  if (!card) return;
+  const meta = card.querySelector('.src-meta');
+  if (!meta) return;
+  const old = card.querySelector('.src-last');
+  const tag = lastCheckTag(src);
+  if (tag) {
+    const wrap = document.createElement('span');
+    wrap.innerHTML = tag;
+    const node = wrap.firstChild;
+    if (old) old.replaceWith(node);
+    else meta.append(node);
+  } else if (old) {
+    old.remove();
+  }
+}
+
 function rowHtml(s) {
   const st = srcState(s);
   const sub = [s.bookSourceGroup || '未分组', s.searchUrl && s.exploreUrl ? '搜索/发现' : s.searchUrl ? '仅搜索' : s.exploreUrl ? '仅发现' : '仅登录态'].join(' · ');
@@ -289,7 +325,7 @@ function rowHtml(s) {
           <b class="src-name">${esc(s.bookSourceName || '(未命名)')}</b>
           <div class="src-meta">
             <span class="src-sub">${esc(sub)}</span>
-            ${statusTag(s)}
+            ${statusTag(s)}${lastCheckTag(s)}
           </div>
         </div>
         <label class="switch" title="启用/禁用">
@@ -1034,14 +1070,26 @@ function openCheckAllSheet() {
   const autoRow = h('label', { class: 'check-opt' }, auto,
     h('span', {}, h('b', {}, '自动接着深度校验'), h('small', {}, '关掉则先看快速结果，再手动决定要不要深度校验'))
   );
+  // 校验档位（对齐 Legado checkSearch/checkInfo/checkToc/checkContent）：默认全开
+  const tierRow = h('div', { class: 'tier-row' });
+  const tdefs = [['checkSearch', '搜索'], ['checkInfo', '详情'], ['checkToc', '目录'], ['checkContent', '正文']];
+  const tboxes = {};
+  for (const [k, label] of tdefs) {
+    const c = h('input', { type: 'checkbox', class: 'tier-opt', checked: true, 'data-tier': k });
+    tboxes[k] = c;
+    tierRow.append(h('label', { class: 'tier-opt' }, c, h('span', {}, label)));
+  }
+  tierRow.append(h('span', { class: 'muted small' }, '勾选本次体检要跑的档位（搜索 / 详情 / 目录 / 正文）'));
   const go = h('button', { class: 'btn primary', style: 'width:100%;justify-content:center;margin-top:12px', type: 'button' }, '开始体检');
   go.onclick = () => {
     const word = kw.value.trim();
     if (!word) return toast('先输入关键词');
+    const tiers = {};
+    for (const k in tboxes) tiers[k] = tboxes[k].checked;
     sheet.close();
-    runCheckAll(word, null, { autoDeep: auto.checked });
+    runCheckAll(word, null, { autoDeep: auto.checked, tiers });
   };
-  body.append(kw, autoRow, go);
+  body.append(kw, autoRow, tierRow, go);
   const sheet = openSheet('书源体检', body);
 }
 
@@ -1113,9 +1161,13 @@ function reasonOf(e, step) {
  *         把「能搜到但详情/目录全坏」的源误判为有效，用户点进去才发现打不开）。
  * deep  = 再加前两章正文，专抓 nextContentUrl / 第二章起规则失效。
  */
-async function checkOne(src, mode, keyword, token) {
+async function checkOne(src, mode, keyword, token, tiers) {
   const t0 = Date.now();
-  const fail = (step, reason) => ({ state: 'bad', step, reason, ms: Date.now() - t0 });
+  const cfg = { checkSearch: true, checkInfo: true, checkToc: true, checkContent: true, ...(tiers || {}) };
+  const tierRows = [];
+  const tier = (name, ok, reason) => tierRows.push({ name, ok: !!ok, reason: reason || '' });
+  const tierSnapshot = () => [...tierRows];
+  const fail = (step, reason) => ({ state: 'bad', step, reason, ms: Date.now() - t0, tiers: tierSnapshot() });
   const local = new AbortController();
   const onGlobalAbort = () => { try { local.abort(); } catch (e) { /* 已结束 */ } };
   if (token) token.signal.addEventListener('abort', onGlobalAbort, { once: true });
@@ -1124,14 +1176,25 @@ async function checkOne(src, mode, keyword, token) {
   const diag = {};
   try {
     const work = async () => {
-      if (!src.searchUrl) return { state: 'nosearch', step: '搜索', reason: '没有 searchUrl，不参与搜索校验' };
+      if (!src.searchUrl) {
+        tier('搜索', false, '没有 searchUrl');
+        return { state: 'nosearch', step: '搜索', reason: '没有 searchUrl，不参与搜索校验', ms: Date.now() - t0, tiers: tierSnapshot() };
+      }
       const cached = mode === 'deep' ? checkArtifacts.get(src.bookSourceUrl) : null;
       if (cached && cached.keyword === keyword) {
-        // 快速校验已经拿到详情/目录：深度只补正文，少打两次请求
-        return await checkContentChapters(src, cached.info, cached.chapters, logs, t0, fail);
+        // 快速校验已经拿到详情/目录：深度只补正文，少打两次请求；档位结论直接复用
+        if (!tierRows.length && cached.tiers) tierRows.push(...cached.tiers);
+        if (mode !== 'deep' || !cfg.checkContent) {
+          return { state: 'ok', step: '搜索 / 详情 / 目录', reason: '', ms: Date.now() - t0, tiers: tierSnapshot() };
+        }
+        const cc = await checkContentChapters(src, cached.info, cached.chapters, logs, t0);
+        tier('正文', cc.ok, cc.reason);
+        if (!cc.ok) return fail('正文', cc.reason);
+        return { state: 'ok', step: '搜索 / 详情 / 目录 / 正文', reason: '', ms: Date.now() - t0, chars: cc.chars, tiers: tierSnapshot() };
       }
       if (mode === 'quick') checkArtifacts.delete(src.bookSourceUrl);
 
+      // ① 搜索：即使「搜索」档没勾，也要用它拿第一本书，供详情/目录/正文档用
       const s = await src.search(keyword);
       diag.status = s.status || 0;
       diag.finalUrl = s.finalUrl || '';
@@ -1139,51 +1202,86 @@ async function checkOne(src, mode, keyword, token) {
       diag.bytes = s.bytes || 0;
       diag.charset = s.charset || '';
       if (s.logs && s.logs.length) logs.push(...s.logs.slice(-12));
-      if (s.error) return fail('搜索', reasonOf(s.error, '搜索'));
-      if (s.status === 403 || s.status === 401) return fail('搜索', `搜索被拒绝（HTTP ${s.status}，可能反爬）`);
-      if (s.status === 404) return fail('搜索', '搜索地址失效（HTTP 404）');
-      if (!Array.isArray(s.list) || !s.list.length) {
-        if (s.logs && s.logs.some((l) => /checkKeyWord/.test(l))) {
-          return { state: 'skip', step: '搜索', reason: '校验词未命中页面关键词（换词再试）', ms: Date.now() - t0 };
-        }
-        return fail('搜索', (s.logs && s.logs.filter((l) => !/^GET /.test(l)).join(' | ')) || '返回 0 条（查 searchUrl / ruleSearch.bookList）');
+      const needBook = cfg.checkInfo || cfg.checkToc || cfg.checkContent;
+      if (s.error || s.status === 403 || s.status === 401 || s.status === 404 || !Array.isArray(s.list) || !s.list.length) {
+        const why = s.error
+          ? reasonOf(s.error, '搜索')
+          : s.status === 403 || s.status === 401
+            ? `搜索被拒绝（HTTP ${s.status}，可能反爬）`
+            : s.status === 404
+              ? '搜索地址失效（HTTP 404）'
+              : s.logs && s.logs.some((l) => /checkKeyWord/.test(l))
+                ? '校验词未命中页面关键词（换词再试）'
+                : (s.logs && s.logs.filter((l) => !/^GET /.test(l)).join(' | ')) || '返回 0 条（查 searchUrl / ruleSearch.bookList）';
+        tier('搜索', false, why);
+        if (!needBook) return { state: 'skip', step: '搜索', reason: '校验范围全关，取书失败', ms: Date.now() - t0, tiers: tierSnapshot() };
+        return fail('搜索', why);
       }
+      tier('搜索', true, '');
       const first = s.list[0];
-      if (!first || !first.bookUrl) return fail('搜索', '第一条结果缺少 bookUrl');
-
-      const bi = await src.getBookInfo(first);
-      if (bi.logs && bi.logs.length) logs.push(...bi.logs.slice(-8));
-      if (bi.error || !bi.info) return fail('详情', reasonOf(bi.error, '详情') || '详情页解析为空');
-      const info = bi.info;
-
-      const toc = await src.getToc(info);
-      if (toc.logs && toc.logs.length) logs.push(...toc.logs.slice(-12));
-      if (toc.error) return fail('目录', reasonOf(toc.error, '目录'));
-      if (!toc.chapters || !toc.chapters.length) return fail('目录', '未解析到章节（查 ruleBookInfo.tocUrl / ruleToc.chapterList）');
-
-      // 只留前几章：给深度校验复用，也避免把几千章数组整场攥在内存里
-      checkArtifacts.set(src.bookSourceUrl, {
-        keyword,
-        info,
-        chapters: toc.chapters.slice(0, CHECK_CONTENT_CHAPTERS),
-      });
-
-      if (mode !== 'deep') {
-        return { state: 'ok', step: '搜索 / 详情 / 目录', reason: '', ms: Date.now() - t0 };
+      if (!first || !first.bookUrl) {
+        tier('详情', false, '第一条结果缺少 bookUrl');
+        return fail('详情', '第一条结果缺少 bookUrl');
       }
-      return await checkContentChapters(src, info, toc.chapters, logs, t0, fail);
+
+      // ② 详情：信息/目档需要 info；档没勾也静默取书
+      if (cfg.checkInfo || cfg.checkToc) {
+        const bi = await src.getBookInfo(first);
+        if (bi.logs && bi.logs.length) logs.push(...bi.logs.slice(-8));
+        if (bi.error || !bi.info) {
+          const why = reasonOf(bi.error, '详情') || '详情页解析为空';
+          tier('详情', false, why);
+          return fail('详情', why);
+        }
+        tier('详情', true, '');
+        const info = bi.info;
+
+        // ③ 目录：正文档需要目录；档没勾也静默取
+        if (cfg.checkToc || cfg.checkContent) {
+          const toc = await src.getToc(info);
+          if (toc.logs && toc.logs.length) logs.push(...toc.logs.slice(-12));
+          if (toc.error || !toc.chapters || !toc.chapters.length) {
+            const why = toc.error ? reasonOf(toc.error, '目录') : '未解析到章节（查 ruleBookInfo.tocUrl / ruleToc.chapterList）';
+            tier('目录', false, why);
+            return fail('目录', why);
+          }
+          tier('目录', true, '');
+          // 只留前几章：给深度校验复用，也避免把几千章数组整场攥在内存里
+          checkArtifacts.set(src.bookSourceUrl, {
+            keyword,
+            info,
+            chapters: toc.chapters.slice(0, CHECK_CONTENT_CHAPTERS),
+            tiers: tierSnapshot(),
+          });
+          if (mode !== 'deep' || !cfg.checkContent) {
+            return { state: 'ok', step: cfg.toc ? '搜索 / 详情 / 目录' : '搜索 / 详情', reason: '', ms: Date.now() - t0, tiers: tierSnapshot() };
+          }
+          const cc = await checkContentChapters(src, info, toc.chapters, logs, t0);
+          tier('正文', cc.ok, cc.reason);
+          if (!cc.ok) return fail('正文', cc.reason);
+          return { state: 'ok', step: '搜索 / 详情 / 目录 / 正文', reason: '', ms: Date.now() - t0, chars: cc.chars, tiers: tierSnapshot() };
+        }
+        return { state: 'ok', step: '搜索 / 详情', reason: '', ms: Date.now() - t0, tiers: tierSnapshot() };
+      }
+      // 详情/目录/正文全关：只按「搜索」判定
+      return { state: 'ok', step: '搜索', reason: '', ms: Date.now() - t0, tiers: tierSnapshot() };
     };
 
     const r = await runWithDeadline(work, CHECK_TIMEOUT_MS, local);
     checkDiag.set(src.bookSourceUrl, { ...diag, logs: logs.slice(-30), ms: Date.now() - t0 });
+    await persistCheck(src, r);
     return r;
   } catch (e) {
     checkDiag.set(src.bookSourceUrl, { ...diag, logs: logs.slice(-30), ms: Date.now() - t0 });
     if (token && token.cancelled) return { state: 'cancelled', step: '已取消', reason: '已取消', ms: Date.now() - t0 };
     if (String(e && e.message) === '超时') {
-      return { state: 'bad', step: '超时', reason: `单源超过 ${CHECK_TIMEOUT_MS / 1000}s（搜索/详情/目录/正文未跑完）`, ms: Date.now() - t0 };
+      const r = { state: 'bad', step: '超时', reason: `单源超过 ${CHECK_TIMEOUT_MS / 1000}s（搜索/详情/目录/正文未跑完）`, ms: Date.now() - t0, tiers: tierSnapshot() };
+      await persistCheck(src, r);
+      return r;
     }
-    return fail('异常', reasonOf(e, '异常'));
+    const r = fail('异常', reasonOf(e, '异常'));
+    await persistCheck(src, r);
+    return r;
   } finally {
     if (token) {
       try { token.signal.removeEventListener('abort', onGlobalAbort); } catch (e) { /* 已结束 */ }
@@ -1192,19 +1290,47 @@ async function checkOne(src, mode, keyword, token) {
   }
 }
 
+/** 校验结果持久化：写回书源记录，下次进书源页直接显示上次结果（对齐 Legado 的校验历史） */
+async function persistCheck(src, r) {
+  if (!r || !src || !src.id) return;
+  if (r.state === 'cancelled' || r.state === 'run') return;
+  try {
+    // 剥离请求期临时字段：cancelSignal 是 AbortSignal，IndexedDB 无法克隆；
+    // 直接展开 src 会把整条写入变成异常（被上面 catch 吞掉 → 结果永远存不上）
+    const lc = {
+      t: Date.now(),
+      state: r.state === 'nosearch' ? 'skip' : r.state,
+      step: r.step || '',
+      reason: r.reason || '',
+      ms: r.ms || 0,
+      tiers: Array.isArray(r.tiers) ? r.tiers : [],
+    };
+    src.lastCheck = lc; // 同步内存实例：paintLastCheck 立刻能读到，不用等重渲染
+    const { cancelSignal: _cs, ...safe } = src;
+    await db.put('sources', { ...safe, id: src.id, lastCheck: lc });
+  } catch (e) {
+    /* 持久化失败不阻塞校验 */
+  }
+  try {
+    paintLastCheck(src);
+  } catch (e) {
+    /* 刷新卡片失败不阻塞校验 */
+  }
+}
+
 /** 深度校验正文两章；抽出来给「快速校验产物复用」和完整链路共用 */
-async function checkContentChapters(src, info, chapters, logs, t0, fail) {
+async function checkContentChapters(src, info, chapters, logs, t0) {
   const n = Math.min(CHECK_CONTENT_CHAPTERS, chapters ? chapters.length : 0);
   let chars = 0;
   for (let i = 0; i < n; i++) {
     const ch = chapters[i];
     const c = await src.getContent(info, ch);
     if (c.logs && c.logs.length) logs.push(...c.logs.slice(-8));
-    if (c.error) return fail(i === 0 ? '正文' : `正文（第 ${i + 1} 章）`, reasonOf(c.error, '正文'));
-    if (!c.content) return fail(i === 0 ? '正文' : `正文（第 ${i + 1} 章）`, '正文为空（查 ruleContent.content）');
+    if (c.error) return { ok: false, reason: reasonOf(c.error, i === 0 ? '正文' : `正文（第 ${i + 1} 章）`) };
+    if (!c.content) return { ok: false, reason: i === 0 ? '正文为空（查 ruleContent.content）' : `正文（第 ${i + 1} 章）为空` };
     chars += c.content.length;
   }
-  return { state: 'ok', step: n > 1 ? '搜索 / 详情 / 目录 / 正文×2' : '搜索 / 详情 / 目录 / 正文', reason: '', ms: Date.now() - t0, chars };
+  return { ok: true, reason: '', chars };
 }
 
 async function runCheckAll(keyword, only = null, opts = {}) {
@@ -1216,6 +1342,7 @@ async function runCheckAll(keyword, only = null, opts = {}) {
   checkAllStop = false;
   const token = newCheckToken();
   checkToken = token;
+  curTiers = { checkSearch: true, checkInfo: true, checkToc: true, checkContent: true, ...(opts.tiers || {}) };
   checkArtifacts.clear();
   try {
     await quickPass(sources, keyword, token);
@@ -1269,7 +1396,7 @@ async function quickPass(sources, keyword, token) {
       updateRowStatus(s.bookSourceUrl, s.bookSourceName);
       paintCheckBar();
 
-      const r = await checkOne(s, 'quick', keyword, token);
+      const r = await checkOne(s, 'quick', keyword, token, curTiers);
       token.active.delete(s.bookSourceName || s.bookSourceUrl);
       paintActive(token);
 
@@ -1349,7 +1476,7 @@ async function deepPass(list, keyword, token) {
       updateRowStatus(s.bookSourceUrl, s.bookSourceName);
       paintCheckBar();
 
-      const r = await checkOne(s, 'deep', keyword, token);
+      const r = await checkOne(s, 'deep', keyword, token, curTiers);
       token.active.delete(s.bookSourceName || s.bookSourceUrl);
       paintActive(token);
       if (r.state === 'cancelled') {
@@ -1512,8 +1639,19 @@ function openCheckModal(src) {
   const body = h('div', { class: 'form check' });
   const kw = h('input', { placeholder: '校验关键词，如 pride' });
   const go = h('button', { class: 'btn primary' }, '开始校验');
+  // 校验档位（对齐 Legado checkSearch/checkInfo/checkToc/checkContent）：勾选会持久化到书源记录，
+  // 影响批量体检与「深度校验」跑哪些档；本调试窗口仍完整展示四步日志。
+  const tierRow = h('div', { class: 'tier-row' });
+  const tdefs = [['checkSearch', '搜索'], ['checkInfo', '详情'], ['checkToc', '目录'], ['checkContent', '正文']];
+  const tboxes = {};
+  for (const [k, label] of tdefs) {
+    const c = h('input', { type: 'checkbox', class: 'tier-opt', checked: src[k] !== false, 'data-tier': k });
+    tboxes[k] = c;
+    tierRow.append(h('label', { class: 'tier-opt' }, c, h('span', {}, label)));
+  }
+  tierRow.append(h('span', { class: 'muted small' }, '勾选决定快速/深度校验跑的档位，勾选会保存到书源'));
   const out = h('div', { class: 'check-out' }, h('div', { class: 'check-line' }, h('span', { class: 'check-k' }, '说明'), h('span', { class: 'check-v' }, '输入关键词后点「开始校验」，将依次跑 搜索 → 详情 → 目录 → 正文 四步。')));
-  body.append(h('div', { class: 'row' }, kw, go), out);
+  body.append(h('div', { class: 'row' }, kw, go), tierRow, out);
   const { close } = openModal(`校验书源 · ${src.bookSourceName || src.bookSourceUrl}`, body, { wide: true, sticky: true });
   const line = (label, text, ok = true) =>
     h('div', { class: 'check-line ' + (ok ? 'ok' : 'bad') }, h('span', { class: 'check-k' }, label), h('span', { class: 'check-v' }, text));
@@ -1521,6 +1659,13 @@ function openCheckModal(src) {
   go.onclick = async () => {
     const keyword = kw.value.trim();
     if (!keyword) return toast('先输入关键词');
+    // 档位选择持久化到书源记录（失败不影响校验继续）
+    try {
+      const save = {};
+      for (const k in tboxes) save[k] = tboxes[k].checked;
+      const { cancelSignal: _cs, ...safe } = src;
+      await db.put('sources', { ...safe, id: src.id, ...save });
+    } catch (e) { /* 保存失败不阻塞 */ }
     out.innerHTML = '';
     go.disabled = true;
     // 单源也走同一套预算：单请求 12s、不重试，避免一个死链把弹窗挂住几分钟
