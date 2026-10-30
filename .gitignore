@@ -1,0 +1,21 @@
+# 依赖与构建产物
+node_modules/
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+*.iml
+.idea/
+.vscode/
+
+# 临时
+*.log
+/tmp/
