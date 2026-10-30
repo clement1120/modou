@@ -33,7 +33,18 @@ final class StorageJanitor {
 
     private static volatile boolean running;
 
+    /** 占用总量（appBytes）缓存：dirBytes 会递归遍历整个 files/cache/databases，
+     *  书库大时一次要十几秒。设置页、存储体检都会用到，60s 内不重复遍历。 */
+    private static volatile long appBytesCache = -1;
+    private static volatile long appBytesCacheAt = 0;
+    private static final long APPBYTES_TTL = 60L * 1000;
+
     private StorageJanitor() {
+    }
+
+    /** 清占用缓存：清理/删书后占用变了，下次取数应重新遍历 */
+    static void invalidateAppBytes() {
+        appBytesCache = -1;
     }
 
     /** 启动时做一次低成本清理；VACUUM 留给设置页的显式「深度回收」 */
@@ -93,7 +104,9 @@ final class StorageJanitor {
             running = true;
         }
         try {
-            long before = appBytes(c);
+            // 字节计量只给手动「深度回收」用（会遍历整个目录，书库大时十几秒）。
+            // 自动清理不计量：省掉两次全目录遍历，避免开书架时和首屏/阅读抢 I/O。
+            long before = deep ? appBytesNow(c) : 0;
             ModouStore store = ModouStore.get(c);
             store.checkpoint();
 
@@ -108,8 +121,9 @@ final class StorageJanitor {
             if (deep) store.compactIfNeeded(8 * MB);
             store.checkpoint();
 
-            long after = appBytes(c);
-            return Math.max(0, before - after);
+            invalidateAppBytes(); // 清理后占用变了，下次取数重算（即使自动清理）
+            long after = deep ? appBytesNow(c) : 0;
+            return deep ? Math.max(0, before - after) : 0;
         } catch (Throwable t) {
             return 0;
         } finally {
@@ -117,8 +131,18 @@ final class StorageJanitor {
         }
     }
 
-    /** 应用私有目录总量（数据库在 files 的上一级，单独补上） */
+    /** 应用私有目录总量（数据库在 files 的上一级，单独补上）。带 60s 缓存：
+     *  设置页「书库占用」与存储体检都会读它，书库大时一次遍历十几秒，缓存避免重复吃 IO。 */
     static long appBytes(Context c) {
+        long now = System.currentTimeMillis();
+        if (appBytesCache >= 0 && now - appBytesCacheAt < APPBYTES_TTL) return appBytesCache;
+        appBytesCache = appBytesNow(c);
+        appBytesCacheAt = now;
+        return appBytesCache;
+    }
+
+    /** 真实遍历（清理前后计量、缓存失效时重算用），绕过缓存 */
+    private static long appBytesNow(Context c) {
         long n = dirBytes(c.getFilesDir()) + dirBytes(c.getCacheDir());
         // /data/data/<pkg>/databases 不在 files/cache 下
         File db = new File(c.getFilesDir().getParentFile(), "databases");

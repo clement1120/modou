@@ -219,6 +219,9 @@ final class SettingsPanel {
 
     /** 存储体检：先给明细，再让用户决定是否深度回收 */
     private void openStorage() {
+        // 书库大时 report 要递归遍历整个目录（十几秒），先给个提示，
+        // 否则用户以为点击没反应、反复点。
+        ModouUi.toast(host, "存储体检中…");
         new Thread(() -> {
             final String report = StorageJanitor.report(host);
             host.runOnUiThread(() -> ModouUi.confirm(host, "存储体检",
@@ -254,15 +257,33 @@ final class SettingsPanel {
 
     /* ---------------- 缓存统计 ---------------- */
 
+    /** 正文总量（设置页展示用）缓存：sumLength 全表扫描正文，书库大时一次十几秒，60s 内不重复扫 */
+    private static long cacheCharsCache = -1;
+    private static long cacheCharsAt = 0;
+    private static final long CACHE_TTL = 60L * 1000;
+
     private void refreshCache() {
+        long now = System.currentTimeMillis();
+        if (cacheCharsCache >= 0 && now - cacheCharsAt < CACHE_TTL) {
+            final long cached = cacheCharsCache;
+            new Thread(() -> {
+                final long n = store.count("chapters"); // 章数轻量（索引扫），不缓存
+                host.runOnUiThread(() -> applyCacheStat(n, cached));
+            }).start();
+            return;
+        }
         new Thread(() -> {
             final long n = store.count("chapters");
             final long chars = store.sumLength("chapters", "content");
-            host.runOnUiThread(() -> {
-                if (cacheStat != null) cacheStat.setText(n + " 章 · 约 "
-                        + String.format(java.util.Locale.CHINA, "%.1f", chars / 1048576.0) + " MB");
-            });
+            cacheCharsCache = chars;
+            cacheCharsAt = now;
+            host.runOnUiThread(() -> applyCacheStat(n, chars));
         }).start();
+    }
+
+    private void applyCacheStat(long n, long chars) {
+        if (cacheStat != null) cacheStat.setText(n + " 章 · 约 "
+                + String.format(java.util.Locale.CHINA, "%.1f", chars / 1048576.0) + " MB");
     }
 
     private void clearCache() {
