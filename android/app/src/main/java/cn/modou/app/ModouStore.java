@@ -996,7 +996,10 @@ public class ModouStore extends SQLiteOpenHelper {
             long dbSize = new File(path).length();
             File dir = new File(path).getParentFile();
             android.os.StatFs stat = new android.os.StatFs(dir.getAbsolutePath());
-            if (stat.getAvailableBytes() < dbSize * 2 + (32L << 20)) return false;
+            // VACUUM 把整库写进一份临时副本，需要约 1 倍库大小（不是 2 倍）。
+            // 旧版按 2 倍判断：10GB 的库要 20GB 空闲，手机上永远不满足 ——
+            // 所以「深度回收」看着跑完了，库文件却一个字节都没小。
+            if (stat.getAvailableBytes() < dbSize + (64L << 20)) return false;
             db.execSQL("VACUUM");
             checkpoint();
             return true;
@@ -1049,13 +1052,39 @@ public class ModouStore extends SQLiteOpenHelper {
     /**
      * 删掉「书已经不在书架」的孤儿正文。
      *
-     * removeBook 默认保留缓存是为了让用户反悔时还能读；但如果用户再也不加回来，
-     * 这部分正文会永远占着库。这里只删「最后缓存时间早于 cutoff」的孤儿，
-     * 给刚移出书架的书留一个后悔窗口。
+     * @param cutoffMs &gt;0 只删最后缓存时间早于它的孤儿（给刚移出书架的书留后悔窗口）；
+     *                 &lt;=0 全删（用户在「深度回收」里明确确认过，不再留窗口）
      */
     public synchronized int deleteOrphanChapters(long cutoffMs) {
+        int n = 0;
+        for (Map.Entry<String, long[]> e : scanOrphanBooks().entrySet()) {
+            long at = e.getValue()[1];
+            // 以前这里写的是 e.getValue() >= cutoffMs，深度回收传 0 时等于「全都跳过」，
+            // 于是「删除移出书架超过 7 天的正文」这句话在手动清理里从来没生效过。
+            if (cutoffMs > 0 && at > 0 && at >= cutoffMs) continue;
+            n += delChaptersOf(e.getKey());
+        }
+        return n;
+    }
+
+    /** 孤儿章节总数（只读主键索引，不搬正文，几万章也很快） */
+    public synchronized int countOrphanChapters() {
+        int n = 0;
+        for (long[] v : scanOrphanBooks().values()) n += (int) v[0];
+        return n;
+    }
+
+    /**
+     * 扫一遍章节表，挑出「书已不在书架」的那些。
+     *
+     * 只 SELECT id / cachedAt：这两列都在主键索引里，SQLite 走覆盖索引，
+     * 不会把每行几 KB 的正文搬出来 —— 否则光为了一次体检就要读满 10GB。
+     *
+     * @return bookId -&gt; {章数, 最后缓存时间}
+     */
+    private Map<String, long[]> scanOrphanBooks() {
         Set<String> books = bookIdSet();
-        Map<String, Long> lastAt = new HashMap<>();
+        Map<String, long[]> out = new HashMap<>();
         Cursor c = null;
         try {
             c = getReadableDatabase().rawQuery("SELECT id, cachedAt FROM chapters", null);
@@ -1067,20 +1096,20 @@ public class ModouStore extends SQLiteOpenHelper {
                 String bid = id.substring(0, cut);
                 if (books.contains(bid)) continue;
                 long at = c.isNull(1) ? 0 : c.getLong(1);
-                Long old = lastAt.get(bid);
-                if (old == null || at > old) lastAt.put(bid, at);
+                long[] v = out.get(bid);
+                if (v == null) {
+                    out.put(bid, new long[]{1, at});
+                } else {
+                    v[0]++;
+                    if (at > v[1]) v[1] = at;
+                }
             }
         } catch (Exception ignore) {
-            return 0;
+            /* 表空 / 库损坏：当作没有孤儿，宁可少删 */
         } finally {
             if (c != null) try { c.close(); } catch (Exception ignore) { }
         }
-        int n = 0;
-        for (Map.Entry<String, Long> e : lastAt.entrySet()) {
-            if (e.getValue() > 0 && e.getValue() >= cutoffMs) continue;
-            n += delChaptersOf(e.getKey());
-        }
-        return n;
+        return out;
     }
 
     /**
@@ -1159,6 +1188,19 @@ public class ModouStore extends SQLiteOpenHelper {
     }
 
     /**
+     * 取正文，但最多搬 maxChars 个字。
+     *
+     * 单章正文可能是几 MB（EPUB 插图内联成 base64 时甚至几十 MB）。整章读进
+     * Java 再净化/切块，冷启动首次进书会卡十几秒，然后被系统判 ANR 或直接
+     * OOM 杀掉 —— 用户看到的就是「转很久，闪一下回到书架」。这里给一个硬上限，
+     * 宁可少显示后半章，也不要把整个阅读页内存撑爆。
+     */
+    public synchronized String chapterContentCapped(String bookId, int index, int maxChars) {
+        if (bookId == null || bookId.isEmpty()) return null;
+        return readTextByKey("chapters", "content", chapterKey(bookId, index), maxChars);
+    }
+
+    /**
      * 按主键读一个可能很长的文本字段，**分段取**。
      *
      * 为什么不能直接 SELECT content：Android 的 CursorWindow 单行上限是 2MB，
@@ -1174,6 +1216,11 @@ public class ModouStore extends SQLiteOpenHelper {
      * 用 substr 拼回来。一片中文约 360KB，稳稳落在窗口内。
      */
     private String readTextByKey(String table, String col, String key) {
+        return readTextByKey(table, col, key, -1);
+    }
+
+    /** @param maxChars &gt;0 时最多取这么多字（超长章的内存闸门），&lt;=0 表示取全量 */
+    private String readTextByKey(String table, String col, String key, int maxChars) {
         final int CHUNK = 120000;
         Cursor c = null;
         try {
@@ -1187,6 +1234,7 @@ public class ModouStore extends SQLiteOpenHelper {
             c = null;
             if (len < 0) return null;
             if (len == 0) return "";
+            if (maxChars > 0 && len > maxChars) len = maxChars;
             if (len <= CHUNK) {
                 c = db.rawQuery("SELECT " + col + " FROM " + table + " WHERE " + pkOf(table) + "=?",
                         new String[]{key});

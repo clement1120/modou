@@ -969,15 +969,70 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
     private List<Paras.Block> readChapterBlocks(int idx, String name) {
         List<Paras.Block> hit = cacheGet(idx);
         if (hit != null) return hit;
-        String html = ModouStore.get(getApplicationContext()).chapterContent(bookId, idx);
+        // HARD_READ_CHARS：单章正文一次最多搬这么多字。老版本导入的 EPUB 会把插图
+        // base64 内联在正文里，一行几 MB 到几十 MB；整章读进堆再净化/切块，冷启动
+        // 第一次进书就卡十几秒，然后被判 ANR 或 OOM 杀掉 —— 用户看到「转很久，
+        // 闪一下回到书架」。这里加硬上限，宁可截断也不撑爆进程。
+        String html = ModouStore.get(getApplicationContext())
+                .chapterContentCapped(bookId, idx, HARD_READ_CHARS);
         if (html == null || html.trim().isEmpty()) return null;
+        boolean heavy = false;
+        if (html.length() > MAX_CHAPTER_CHARS) {
+            html = stripBigDataUrls(html);
+            heavy = true;
+        }
         // 净化规则要在这里生效：网页版是在 purifyContent 之后才交给渲染的，
         // 原生若跳过这一步，用户在设置页配的替换规则在阅读页就等于没配。
         // 走块序列而不是纯文本：EPUB 正文里的插图因此才能显示出来。
-        List<Paras.Block> bl = Paras.blocks(purifyContent(html), name);
+        String body = purifyContent(html);
+        if (body.length() > MAX_CHAPTER_CHARS) {
+            body = body.substring(0, MAX_CHAPTER_CHARS);
+            heavy = true;
+        }
+        List<Paras.Block> bl = Paras.blocks(body, name);
         if (bl.isEmpty()) return null;
+        if (heavy) noteHeavyChapter();
         cachePut(idx, bl);
         return bl;
+    }
+
+    /** 单章正文的展示上限（约 90 万字，够读十几分钟） */
+    private static final int MAX_CHAPTER_CHARS = 900000;
+    /** 单章正文的读取硬上限：再大就只读前这么多，剩下的直接放弃 */
+    private static final int HARD_READ_CHARS = 6000000;
+    /** 只剥这么长的 data URL：短的小图标留着还能显示 */
+    private static final int BIG_DATA_URL = 2048;
+    private boolean heavyNotified;
+
+    /** 剥掉正文里的超长内联图片（base64），只保留文字与短资源 */
+    private static String stripBigDataUrls(String s) {
+        StringBuilder out = new StringBuilder(Math.min(s.length(), 1 << 21));
+        int i = 0;
+        final int n = s.length();
+        while (i < n) {
+            int k = s.indexOf("data:image/", i);
+            if (k < 0) {
+                out.append(s, i, n);
+                break;
+            }
+            int j = k + 11;
+            while (j < n) {
+                char ch = s.charAt(j);
+                if (ch == '"' || ch == '\'' || ch == ')' || ch == ' ' || ch == '>') break;
+                j++;
+            }
+            out.append(s, i, k);
+            if (j - k < BIG_DATA_URL) out.append(s, k, j); // 小图留原样
+            i = j;
+        }
+        return out.toString();
+    }
+
+    /** 大章提示每本书只说一次，别每翻一页弹一遍 */
+    private void noteHeavyChapter() {
+        if (heavyNotified) return;
+        heavyNotified = true;
+        toast("本章体积过大（内嵌插图多），已省略插图只显示文字");
     }
 
     /**

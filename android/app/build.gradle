@@ -10,8 +10,8 @@ android {
         applicationId 'cn.modou.app'
         minSdk 26
         targetSdk 34
-        versionCode 143
-        versionName '0.6.137'
+        versionCode 145
+        versionName '0.6.139'
     }
 
     buildTypes {
