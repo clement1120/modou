@@ -53,9 +53,15 @@ final class StorageJanitor {
         long now = System.currentTimeMillis();
         if (now - sp.getLong(PREF_LAST, 0) < AUTO_INTERVAL_MS) return;
         new Thread(() -> {
+            // 让书架首屏查完、让用户先点走：1.2s 太急，书库大时清理的
+            // checkpoint / 扫描正好撞上「冷启动第一次打开书」，两边抢库锁。
             try {
-                Thread.sleep(1200); // 让书架先把首屏查完
-                if (ModouStore.isQuiet()) return; // 阅读页在前台：让路，下次启动再清
+                Thread.sleep(6000);
+            } catch (InterruptedException ignore) {
+                return;
+            }
+            if (ModouStore.isQuiet()) return; // 阅读页在前台：让路，下次启动再清
+            try {
                 clean(c, false);
                 // 成功（即使是 0 字节）才记时间：clean 抛错时不更新，下次启动再试
                 sp.edit().putLong(PREF_LAST, now).apply();
@@ -65,12 +71,22 @@ final class StorageJanitor {
         }, "modou-storage-auto").start();
     }
 
+    /** 体检结果 */
+    static final class Result {
+        long freed;
+        int orphanChapters;
+        boolean vacuumed;
+        long needBytes;
+        long freeBytes;
+    }
+
     /** 人类可读的占用明细（设置页 / 诊断用） */
     static String report(Context c) {
         ModouStore store = ModouStore.get(c);
         long db = store.dbBytes();
         long page = store.dbPageBytes();
         long free = store.dbFreeBytes();
+        int orphans = store.countOrphanChapters();
         long images = dirBytes(new File(c.getFilesDir(), "epub"));
         long covers = dirBytes(new File(c.getFilesDir(), "covers"));
         long imports = dirBytes(new File(c.getCacheDir(), "import"));
@@ -80,6 +96,11 @@ final class StorageJanitor {
         long total = db + images + covers + imports + legacy;
         long app = appBytes(c);
         long other = Math.max(0, app - total);
+        // 可回收 = 空闲页 + 已移出书架的正文（按全书平均章大小估算，不为此再扫一遍正文）
+        long chapters = store.count("chapters");
+        long avg = chapters > 0 ? page / chapters : 0;
+        long orphanBytes = orphans > 0 ? avg * orphans : 0;
+        long recover = free + orphanBytes;
         return "总计 " + size(app)
                 + "\n· 数据库 " + size(db) + (free > 0 ? "（空闲页 " + size(free) + "）" : "")
                 + "\n· EPUB 插图 " + size(images)
@@ -87,20 +108,24 @@ final class StorageJanitor {
                 + "\n· 导入临时 " + size(imports)
                 + "\n· 旧版副本 " + size(legacy)
                 + (other > 0 ? "\n· 其他（WebView/日志/临时）" + size(other) : "")
-                + (page > 0 ? "\n\n库页 " + size(page) + "，可回收 " + size(free) : "");
+                + "\n\n库页 " + size(page) + "，可回收约 " + size(recover)
+                + (orphans > 0
+                ? "\n其中 " + orphans + " 章是已移出书架的正文（约 " + size(orphanBytes) + "）"
+                : "")
+                + (recover == 0 ? "\n库里的正文都是书架上还在读的书，没有可删的余量。" : "");
     }
 
     /**
      * 执行清理。
      *
      * @param deep true = 连 VACUUM 一起做（会短暂持有写锁，适合设置页手动触发）
-     * @return 清理前后减少的字节数（近似；WAL/文件系统记账会有少量误差）
      */
-    static long clean(Context c, boolean deep) {
+    static Result clean(Context c, boolean deep) {
+        Result r = new Result();
         // 阅读页在前台时不做批量删除/压缩，避免和取章、排版抢数据库
-        if (ModouStore.isQuiet()) return 0;
+        if (ModouStore.isQuiet()) return r;
         synchronized (StorageJanitor.class) {
-            if (running) return 0;
+            if (running) return r;
             running = true;
         }
         try {
@@ -114,20 +139,40 @@ final class StorageJanitor {
             deleteOldCopies(c);
             deleteOrphanImages(c, store);
             deleteOrphanCovers(c, store);
-            store.deleteOrphanChapters(System.currentTimeMillis() - ORPHAN_KEEP_MS);
+            // 深度回收是用户明确点过「确定」的：孤儿正文全删，不再留 7 天。
+            // 自动清理仍然只删早就过期的，避免把「刚删掉、还想加回来」的书洗掉。
+            r.orphanChapters = store.deleteOrphanChapters(
+                    deep ? 0 : System.currentTimeMillis() - ORPHAN_KEEP_MS);
             store.trimOnlineChapterCache(ONLINE_CACHE_MAX);
-            // 自动清理只做 checkpoint + 孤儿回收：VACUUM 会复制整库，
-            // 放在启动路径上会和首屏/阅读抢 I/O，必须由设置页的「深度回收」显式触发。
-            if (deep) store.compactIfNeeded(8 * MB);
             store.checkpoint();
+
+            if (deep) {
+                // 删完正文必须压缩：SQLite 只把页标成空闲，文件不会自己变小。
+                // 以前这里要求「2 倍库大小」的空闲空间，10GB 的库要 20GB 才肯动，
+                // 手机上永远不满足 —— 于是回收完数字还是 0，用户以为清理没生效。
+                long dbSize = store.dbBytes();
+                r.needBytes = dbSize + (64L * MB);
+                r.freeBytes = available(c);
+                r.vacuumed = store.compactIfNeeded(0);
+            }
 
             invalidateAppBytes(); // 清理后占用变了，下次取数重算（即使自动清理）
             long after = deep ? appBytesNow(c) : 0;
-            return deep ? Math.max(0, before - after) : 0;
+            r.freed = deep ? Math.max(0, before - after) : 0;
+            return r;
         } catch (Throwable t) {
-            return 0;
+            return r;
         } finally {
             running = false;
+        }
+    }
+
+    /** 应用可用的磁盘空间（用于判断能不能 VACUUM） */
+    private static long available(Context c) {
+        try {
+            return new android.os.StatFs(c.getFilesDir().getAbsolutePath()).getAvailableBytes();
+        } catch (Throwable t) {
+            return -1;
         }
     }
 

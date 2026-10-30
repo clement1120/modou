@@ -641,4 +641,43 @@ final class ModouUi {
         });
         return row;
     }
+
+    /**
+     * 单按钮提示（结果 / 说明类）。
+     *
+     * 不用 Toast：中文一句话就两行，系统 Toast 超过两行会被截断，
+     * 「回收了多少、还差多少空间」这种关键数字正好被切掉。
+     */
+    static void alert(Context c, String title, String msg) {
+        if (!(c instanceof Activity)) {
+            toast(c, msg);
+            return;
+        }
+        Activity a = (Activity) c;
+        try {
+            ModouUi u = of(a);
+            LinearLayout box = new LinearLayout(a);
+            box.setOrientation(LinearLayout.VERTICAL);
+            box.setPadding(dp(a, 14), dp(a, 4), dp(a, 14), 0);
+            TextView t = tv(a, msg, 13.5f, u.sub);
+            t.setLineSpacing(dp(a, 3), 1.3f);
+            box.addView(t);
+            Dialog d = sheet(a, title, box);
+
+            TextView ok = tv(a, "知道了", 15, 0xFFFFFFFF);
+            ok.setGravity(Gravity.CENTER);
+            ok.setPadding(0, dp(a, 12), 0, dp(a, 12));
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(u.accent);
+            bg.setCornerRadius(dp(a, 12));
+            ok.setBackground(bg);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.topMargin = dp(a, 12);
+            box.addView(ok, lp);
+            ok.setOnClickListener(v -> d.dismiss());
+        } catch (Throwable e) {
+            toast(c, msg);
+        }
+    }
 }

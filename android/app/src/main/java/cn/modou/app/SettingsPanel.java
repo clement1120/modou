@@ -225,21 +225,34 @@ final class SettingsPanel {
         new Thread(() -> {
             final String report = StorageJanitor.report(host);
             host.runOnUiThread(() -> ModouUi.confirm(host, "存储体检",
-                    report + "\n\n「深度回收」会删除移出书架超过 7 天的孤儿正文、"
-                            + "已无书引用的插图和封面、导入残留文件，并压缩数据库空页。"
-                            + "数据库很大时可能需要一会儿。",
+                    report + "\n\n「深度回收」会删除已移出书架的正文（不再保留 7 天）、"
+                            + "已无书引用的插图和封面、导入残留文件，然后压缩数据库。"
+                            + "数据库很大时可能要几分钟，期间别进阅读页。",
                     this::deepCleanStorage));
         }, "modou-storage-report").start();
     }
 
     private void deepCleanStorage() {
-        ModouUi.toast(host, "正在回收空间…");
+        ModouUi.toast(host, "正在回收空间…数据库大时需要几分钟");
         new Thread(() -> {
-            final long freed = StorageJanitor.clean(host, true);
+            final StorageJanitor.Result r = StorageJanitor.clean(host, true);
             host.runOnUiThread(() -> {
-                ModouUi.toast(host, freed > 0
-                        ? "已回收 " + BookFiles.sizeText(freed)
-                        : "没有可回收的空间");
+                String msg;
+                if (r.freed > 0) {
+                    msg = "已回收 " + BookFiles.sizeText(r.freed);
+                } else if (r.orphanChapters > 0 && !r.vacuumed) {
+                    // 正文删了，但数据库文件要 VACUUM 才会缩；空间不够就压不动
+                    msg = "已清理 " + r.orphanChapters + " 章孤儿正文，但压缩数据库还需约 "
+                            + BookFiles.sizeText(r.needBytes) + " 空闲（当前 "
+                            + BookFiles.sizeText(Math.max(0, r.freeBytes)) + "）。"
+                            + "腾出空间后再点一次即可真正释放。";
+                } else if (r.orphanChapters > 0) {
+                    msg = "已清理 " + r.orphanChapters + " 章孤儿正文，数据库正在压缩，稍后重进本页看占用";
+                } else {
+                    msg = "没有可回收的空间：库里的正文都是书架上还在读的书。"
+                            + "要省空间只能删书，或重新导入更小的版本。";
+                }
+                ModouUi.alert(host, "回收结果", msg);
                 refreshCache();
                 refreshStorage();
             });

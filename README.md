@@ -1178,6 +1178,8 @@ JS 只在 `document.body` 上挂 `data-reader-theme="dark"`（样式域仅限阅
 
 - **v0.6.138** 修存储 IO 导致的一连串卡顿：升到 v0.6.137 后，首次打开书架会触发 `StorageJanitor.autoClean`（24h 一次），它为了统计回收字节数会**两次递归遍历整个 files/cache/databases 目录**（书库大时一次十几秒），叠加 v0.6.137 引入的 IndexedDB→SQLite 迁移 IO，把磁盘打满，导致书架首屏、点封面取章、书源列表、设置页「书库占用」同时变卡、点完半天没反应。修复：① `StorageJanitor.report` / `appBytes` 加 60s 缓存，设置页与存储体检的占用计算不再每次重遍历；② 自动清理不再做字节计量（去掉两次全目录遍历），只由设置页「深度回收」显式计量；③ 设置页「缓存统计」的 `sumLength` 全表扫描正文也加 60s 缓存；④ 点「书库占用」先弹「存储体检中…」提示，避免误以为没反应。验证：`node test/store-layer.mjs` 50/0、`npm run test:ui` 187/0、`:app:assembleDebug` 通过。
 
+- **v0.6.139** 修「10GB 书库清不掉」+「冷启动首书卡很久后闪回书架」：根因三条。① `ShelfActivity.removeBook` 的「同时删除本地文件」默认不勾，移出书架只删 `books`/`progress`，正文留在 `chapters` 表里 —— 书早不在书架，10GB 全成了孤儿正文；② `StorageJanitor.clean(deep)` 给 `deleteOrphanChapters` 传的 cutoff 是「7 天前」，而 `deleteOrphanChapters` 里的判断写成 `at >= cutoffMs` 就跳过，深度回收传 0 时等于**所有孤儿都被跳过**，那句「删除移出书架超过 7 天的孤儿正文」在手动清理里从未生效；③ `compactIfNeeded` 先看 `freelist`（孤儿没删时恒为 0，直接 return），再要求「2 倍库大小」空闲空间（10GB 库要 20GB），手机上永远不满足 —— 于是删了也不缩、体检报告里的「可回收」只显示 freelist，永远是 0 B。修复：① 深度回收传 cutoff=0，孤儿正文全删（自动清理仍保留 7 天窗口）；② 判断改成 `cutoffMs > 0 && at >= cutoffMs`；③ VACUUM 门槛改为「1 倍库大小 + 64MB」，并回传真实结果（删了几章、是否真空成功、还差多少空间），失败时说清原因而不是「没有可回收的空间」；④ 体检报告新增「已移出书架的 N 章正文（约 X）」，可回收 = 空闲页 + 孤儿正文估算；⑤ 阅读页给单章加硬上限（`chapterContentCapped` 6M 字），超 90 万字时先剥掉内联 base64 大图再排版并提示一次 —— 老版本内联插图的章节会把堆撑爆，表现就是「转很久、闪一下回到书架」；⑥ `autoClean` 延迟从 1.2s 放到 6s，避开「冷启动第一次打开书」。验证：`store-layer` 50/0、`local-import` 35/0、`ui-smoke` 187/0、`:app:assembleDebug` 通过。
+
 ### 历史版本（v0.6.45 – v0.6.118）
 
 | 版本 | 要点 |
