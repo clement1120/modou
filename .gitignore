@@ -20,5 +20,8 @@ Thumbs.db
 *.log
 /tmp/
 
+# 本地工具链（JDK/SDK 缓存，不入库）
+.toolchain/
+
 # Playwright 本地浏览器缓存（体积大，不入库）
 .playwright-browsers/

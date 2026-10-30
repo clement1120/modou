@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main, fix/storage-source-check-memory, feature/md3-panel-web-render, feat/ci-cover-perf]
+  pull_request:
+
+jobs:
+  test:
+    name: JS 引擎 + UI 冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 安装 Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: 启动夹具测试服务（8090，8080 常被占用）
+        run: |
+          MODOU_FIXTURES=1 PORT=8090 node server/proxy-server.js &
+          sleep 3
+
+      - name: 存储层单测
+        run: node test/store-layer.mjs
+
+      - name: 引擎 + 本地导入测试
+        run: npm test
+
+      - name: UI 冒烟（187 基线）
+        env:
+          MODOU_BASE: http://127.0.0.1:8090
+        run: npm run test:ui
+
+  build:
+    name: 构建 Debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      # android-actions/setup-android 的 sdkmanager 装不了 'tools' 包（已从 Google 仓库移除），
+      # 直接下载 build-tools 34 + platform 34 两个 zip 解包，和本地 .toolchain 同一套做法
+      - name: 安装 Android SDK（build-tools 34 + platform 34）
+        run: |
+          mkdir -p "$HOME/android-sdk"
+          curl -sSL -o bt.zip https://dl.google.com/android/repository/build-tools_r34-linux.zip
+          curl -sSL -o pl.zip https://dl.google.com/android/repository/platform-34-ext7_r03.zip
+          unzip -q bt.zip -d "$HOME/android-sdk"
+          unzip -q pl.zip -d "$HOME/android-sdk"
+          cd "$HOME/android-sdk"
+          mkdir -p build-tools platforms licenses
+          mv android-14 build-tools/34.0.0
+          mv android-34 platforms/android-34
+          printf '24333f8a63b6825ea9c5514fa83cbd4b2bf6c9f\n' > licenses/android-sdk-license
+
+      - name: 构建
+        working-directory: android
+        run: |
+          echo "sdk.dir=$HOME/android-sdk" > local.properties
+          bash gradlew :app:assembleDebug --no-daemon
+
+      - name: 上传 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: modou-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

@@ -14,6 +14,9 @@ import android.widget.ImageView;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import android.os.Handler;
+import android.os.Looper;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -45,9 +48,45 @@ final class CoverLoader {
     private CoverLoader() {
     }
 
+    /* 滚动防卡：书架/搜索结果在快速滚动时暂停发起新下载（占位已经先摆上了），
+     * 停稳 120ms 再补发。避免「一屏 12 本 → 滚动扫过几十本」时 3 条下载线程
+     * 全部被看不见的封面占满，真正要看的封面反而排队。对齐 Legado 的滑动暂停策略。 */
+    private static volatile boolean scrolling;
+    private static final Handler H = new Handler(Looper.getMainLooper());
+    private static final List<Runnable> pending = new ArrayList<>();
+    private static final Runnable STOP = () -> {
+        scrolling = false;
+        List<Runnable> drain = new ArrayList<>();
+        synchronized (pending) {
+            drain.addAll(pending);
+            pending.clear();
+        }
+        for (Runnable r : drain) POOL.execute(r);
+    };
+
+    /** 滚动容器每帧滚动都调一次：标记「在滚动」并重置 120ms 停稳计时 */
+    static void markScroll() {
+        scrolling = true;
+        H.removeCallbacks(STOP);
+        H.postDelayed(STOP, 120);
+    }
+
+    /** 手动停用滚动态（列表销毁时调用，防止计时器把已销毁页面的任务再拉起来） */
+    static void pause() {
+        scrolling = false;
+        H.removeCallbacks(STOP);
+        List<Runnable> drain = new ArrayList<>();
+        synchronized (pending) {
+            drain.addAll(pending);
+            pending.clear();
+        }
+        for (Runnable r : drain) POOL.execute(r);
+    }
+
     /**
      * 加载封面。未命中时先摆占位，下载成功后回调主线程替换。
      * key 用 url+name 而不是 url：同一个 url 换了书名（改名）时占位色也要跟着变。
+     * 滚动中且未命中缓存：挂到 pending，停稳后再下载。
      */
     static void load(ImageView iv, String url, String name) {
         if (iv == null) return;
@@ -61,7 +100,7 @@ final class CoverLoader {
             iv.setImageBitmap(cached);
             return;
         }
-        POOL.execute(() -> {
+        final Runnable task = () -> {
             Bitmap b = fetch(url);
             if (b == null) return;
             MEM.put(key, b);
@@ -69,7 +108,14 @@ final class CoverLoader {
                 // 网格 item 会被复用：取回来时这张 View 可能已经滚动到别的书了
                 if (key.equals(iv.getTag())) iv.setImageBitmap(b);
             });
-        });
+        };
+        if (scrolling) {
+            synchronized (pending) {
+                pending.add(task);
+            }
+        } else {
+            POOL.execute(task);
+        }
     }
 
     /** data: URL 直接解码；http(s) 走连接（带超时与重定向） */
