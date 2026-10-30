@@ -286,6 +286,46 @@ export async function renderReader(view, id, index, startHidden = false) {
    * 再重建骨架——否则顺序反过来（先重建 → 再 await 取正文）会画出一帧空正文，
    * 那就是跨章翻页"闪一下"的第二个来源。
    */
+  const rawMem = new Map();
+  /**
+   * rawMem 原来是只进不出的 Map：读得越多，整本书（甚至多本书）的正文 HTML 就
+   * 一直留在 WebView 堆里。500MB 的书读一遍 = 再驻留一份 500MB，这是「占用是书
+   * 大小十几倍」最直接的一块。Legado 的 ACache 有 sizeLimit/countLimit，这里给
+   * rawMem 同样的两道闸：最多留 6 章、正文合计 8M 字符（实际 UTF-16 约 16MB）。
+   * 当前章和刚写入的章永不淘汰，其余按 LRU 出队；需要时从 chapters 表重取。
+   */
+  const RAW_MEM_MAX_CHAPTERS = 6;
+  const RAW_MEM_MAX_CHARS = 8 * 1024 * 1024;
+  let rawMemChars = 0;
+  const rawMemSet = (k, v) => {
+    if (typeof v !== 'string' || !v) return;
+    const old = rawMem.get(k);
+    if (old != null) rawMemChars -= old.length;
+    rawMem.delete(k);
+    rawMem.set(k, v);
+    rawMemChars += v.length;
+    while ((rawMem.size > RAW_MEM_MAX_CHAPTERS || rawMemChars > RAW_MEM_MAX_CHARS) && rawMem.size > 1) {
+      let victim = null;
+      for (const key of rawMem.keys()) {
+        if (key !== index && key !== k) {
+          victim = key;
+          break;
+        }
+      }
+      if (victim == null) break;
+      const gone = rawMem.get(victim);
+      rawMem.delete(victim);
+      rawMemChars -= gone ? gone.length : 0;
+    }
+  };
+  const rawMemGet = (k) => {
+    const v = rawMem.get(k);
+    if (v != null) {
+      rawMem.delete(k);
+      rawMem.set(k, v); // 命中即置为最近使用
+    }
+    return v;
+  };
   let prefetchedRaw = null;
   let prefetchedFor = -1;
   if (paged && gPendingSlide) {
@@ -611,46 +651,6 @@ export async function renderReader(view, id, index, startHidden = false) {
    * 取一次至少要等一个任务轮次（≈几毫秒，会让动画晚启动），所以读过的章节留一份在内存。
    * 由 chapterHtmlAt 顺手写入，prefetchNeighbors 在空闲时预热相邻章。
    */
-  const rawMem = new Map();
-  /**
-   * rawMem 原来是只进不出的 Map：读得越多，整本书（甚至多本书）的正文 HTML 就
-   * 一直留在 WebView 堆里。500MB 的书读一遍 = 再驻留一份 500MB，这是「占用是书
-   * 大小十几倍」最直接的一块。Legado 的 ACache 有 sizeLimit/countLimit，这里给
-   * rawMem 同样的两道闸：最多留 6 章、正文合计 8M 字符（实际 UTF-16 约 16MB）。
-   * 当前章和刚写入的章永不淘汰，其余按 LRU 出队；需要时从 chapters 表重取。
-   */
-  const RAW_MEM_MAX_CHAPTERS = 6;
-  const RAW_MEM_MAX_CHARS = 8 * 1024 * 1024;
-  let rawMemChars = 0;
-  const rawMemSet = (k, v) => {
-    if (typeof v !== 'string' || !v) return;
-    const old = rawMem.get(k);
-    if (old != null) rawMemChars -= old.length;
-    rawMem.delete(k);
-    rawMem.set(k, v);
-    rawMemChars += v.length;
-    while ((rawMem.size > RAW_MEM_MAX_CHAPTERS || rawMemChars > RAW_MEM_MAX_CHARS) && rawMem.size > 1) {
-      let victim = null;
-      for (const key of rawMem.keys()) {
-        if (key !== index && key !== k) {
-          victim = key;
-          break;
-        }
-      }
-      if (victim == null) break;
-      const gone = rawMem.get(victim);
-      rawMem.delete(victim);
-      rawMemChars -= gone ? gone.length : 0;
-    }
-  };
-  const rawMemGet = (k) => {
-    const v = rawMem.get(k);
-    if (v != null) {
-      rawMem.delete(k);
-      rawMem.set(k, v); // 命中即置为最近使用
-    }
-    return v;
-  };
   let switchWarmTimer = 0; // 切章后延迟预热的定时器（避开滑入动画）
   let switchGen = 0; // 切章代号：异步切章回来时若已换人，直接作废
   let pagesEl = null;
