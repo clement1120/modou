@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+        「一键扫描」要读手机里的 txt/epub：
+        - Android 12L 及以下：READ_EXTERNAL_STORAGE 就能查 MediaStore.Files；
+        - Android 13 起该权限对 MediaStore 失效，只能要「所有文件访问」，否则扫出来永远是空的。
+        只读不写，且扫描结果完全在本机处理。
+    -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
+
+
+    <!--
+        Android 11+ 包可见性：本应用要绑定「别的应用」里的系统 TTS 引擎服务，
+        必须在 queries 里声明 TTS_SERVICE，否则 TextToSpeech 绑定静默失败
+        （onInit 直接返回 ERROR，前端只能提示「未检测到系统语音」）。
+        国内 ROM（MIUI/ColorOS 等）执行得比三星更严，缺了这条必坏。
+        后两条用于「打开系统语音设置 / 安装语音数据」的可见性判断。
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <intent>
+            <action android:name="com.android.settings.TTS_SETTINGS" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.tts.engine.INSTALL_TTS_DATA" />
+        </intent>
+    </queries>
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:theme="@style/Theme.Modou"
+        android:usesCleartextTraffic="true"
+        android:hardwareAccelerated="true"
+        android:allowBackup="true"
+        android:supportsRtl="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- 从文件管理器/微信等接收书源 JSON 分享导入 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="application/json" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <!-- 「用其他应用打开」书籍：EPUB -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/epub+zip" />
+            </intent-filter>
+            <!-- 部分文件管理器把 TXT/EPUB 报成 octet-stream，按扩展名再兜一次 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/octet-stream" android:pathPattern=".*\\.txt" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/octet-stream" android:pathPattern=".*\\.epub" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            原生阅读页（实验）：只承接正文渲染与选词，从阅读页「排版」面板进入。
+            独立 Activity 的好处是出问题退回原阅读页即可，书架/书源/导入不受影响。
+        -->
+        <activity
+            android:name=".NativeReaderActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.Modou"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
+            渐进式原生化的三个屏：书架 / 书籍详情 / 设置。
+            都从 MainActivity 唤起，数据直接读 SQLite（与网页版同一份），
+            网页版保留在栈底，返回即回到原来的界面——出问题随时可退。
+        -->
+        <activity
+            android:name=".ShelfActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Modou"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+
+        <activity
+            android:name=".BookActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Modou"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Modou"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+
+        <activity
+            android:name=".SearchActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Modou"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+
+        <activity
+            android:name=".LocalBooksActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Modou"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+
+        <activity
+            android:name=".ImportActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Modou"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+
+        <activity
+            android:name=".RulesActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Modou"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+
+        <activity
+            android:name=".SourcesActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Modou"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+    </application>
+</manifest>

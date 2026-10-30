@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      系统处于深色时，清单里的 Theme.Modou 解析成这一份。
+
+      为什么需要它：Android 12+ 的冷启动闪屏（图标 + windowSplashScreenBackground）
+      由系统在 Activity.onCreate 之前用「清单主题」绘制，此时 applySavedTheme() 里的
+      setTheme() 还没机会执行。values/ 里那份是浅色（奶油底），于是夜间冷启动会先闪
+      一屏亮色 —— 就是用户截图里的样子。这里按系统深色给出对应的暗色闪屏。
+    -->
+    <style name="Theme.Modou" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/app_bg_dark</item>
+        <item name="android:windowSplashScreenBackground">@color/app_bg_dark</item>
+        <item name="android:statusBarColor">@color/app_bg_dark</item>
+        <item name="android:navigationBarColor">@color/app_bg_dark</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="app_bg">#F5F0E2</color>
+    <!-- 开屏底色：与暗色主题的页面背景 #1B1A17 一致，避免夜间模式启动瞬间闪一下亮色 -->
+    <color name="app_bg_dark">#1B1A17</color>
+    <color name="ic_launcher_background">#5B7CFF</color>
+</resources>

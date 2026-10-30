@@ -1,0 +1,4 @@
+// 根构建脚本：声明插件版本，子模块 :app 负责应用
+plugins {
+    id 'com.android.application' version '8.5.2' apply false
+}

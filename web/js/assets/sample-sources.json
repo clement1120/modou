@@ -1,0 +1,53 @@
+[
+  {
+    "bookSourceName": "Project Gutenberg 公版书库",
+    "bookSourceGroup": "示例",
+    "bookSourceUrl": "https://www.gutenberg.org",
+    "bookSourceType": 0,
+    "enabled": true,
+    "searchUrl": "https://www.gutenberg.org/ebooks/search/?query={{key}}",
+    "ruleSearch": {
+      "bookList": "li.booklink",
+      "name": "span.title@text",
+      "author": "span.subtitle@text",
+      "bookUrl": "a.link@href",
+      "coverUrl": "img[src*=\".cover.\"]@src"
+    },
+    "ruleBookInfo": {
+      "name": "h1[itemprop=name]@text##\\s+by\\s+.*$##",
+      "author": "a[itemprop=creator]@text##,.*$##",
+      "coverUrl": "img.cover-art@src",
+      "tocUrl": "a[href*=\"/cache/epub/\"]@href"
+    },
+    "ruleToc": {
+      "chapterList": "h2 > a[id]",
+      "chapterName": "@js:\nvar a = result;\nvar h2 = a.closest('h2');\nvar name = '';\nif (h2) {\n  var c = h2.cloneNode(true);\n  c.querySelectorAll('.caption, .pagenum').forEach(function (el) { el.remove(); });\n  name = c.textContent.replace(/\\s+/g, ' ').trim().replace(/_/g, ' ');\n}\nresult = name || a.id || '';",
+      "chapterUrl": "@js:\nresult = baseUrl + '#' + result.id;"
+    },
+    "ruleContent": {
+      "content": "@js:\nvar anchor = vars.chapterUrl.split('#')[1] || '';\nvar a = doc.querySelector('h2 > a[id=\"' + anchor + '\"]');\nif (!a) { result = ''; }\nelse {\n  var h2 = a.closest('h2');\n  var html = '';\n  var n = h2.nextElementSibling;\n  while (n && n.tagName !== 'H2') { html += n.outerHTML; n = n.nextElementSibling; }\n  result = html.replace(/<span class=\"pagenum\">[\\s\\S]*?<\\/span>/g, '');\n}"
+    }
+  },
+  {
+    "bookSourceName": "Books to Scrape 练习场",
+    "bookSourceGroup": "示例",
+    "bookSourceUrl": "https://books.toscrape.com",
+    "bookSourceType": 0,
+    "enabled": true,
+    "exploreUrl": "https://books.toscrape.com/catalogue/page-{{page}}.html",
+    "ruleExplore": {
+      "bookList": "article.product_pod",
+      "name": "h3 a@title",
+      "bookUrl": "h3 a@href",
+      "coverUrl": ".image_container img@src",
+      "kind": "p.star-rating@class##star-rating ##",
+      "wordCount": ".price_color@text"
+    },
+    "ruleBookInfo": {
+      "name": "h1@text",
+      "intro": "#product_description + p@text",
+      "coverUrl": ".product_gallery img@src",
+      "kind": "p.star-rating@class##star-rating ##"
+    }
+  }
+]

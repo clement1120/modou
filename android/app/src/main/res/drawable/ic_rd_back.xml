@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 只描边不填充：填充一条开放的折线会被自动闭合，画出来是个实心三角（旧版就是这样） -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M14.8,5.4L8.2,12l6.6,6.6"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>

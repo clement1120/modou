@@ -1,0 +1,54 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'cn.modou.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'cn.modou.app'
+        minSdk 26
+        targetSdk 34
+        versionCode 142
+        versionName '0.6.136'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        debug {
+            applicationIdSuffix '.debug'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    // AGP 8.x 起 BuildConfig 默认不生成；壳的 appVersion() 依赖它
+    buildFeatures {
+        buildConfig = true
+    }
+
+    // 零第三方依赖：NanoHTTPD 以源码内嵌（org/nanohttpd），网络用 JDK HttpURLConnection
+}
+
+dependencies {
+}
+
+// web/ 是唯一事实源：构建前自动同步进生成目录（与 Node dev server 共用同一份前端代码）
+// 注意：不写回 src/main/assets/web —— 否则仓库里会多出一份 29 个文件的镜像副本
+def webDir = file('../../web')
+def genAssets = layout.buildDirectory.dir('generated/webAssets')
+
+android.sourceSets.main.assets.srcDirs += genAssets.get().asFile
+
+tasks.register('syncWeb', Copy) {
+    from webDir
+    into genAssets.map { it.dir('web') }
+}
+tasks.named('preBuild') { dependsOn 'syncWeb' }

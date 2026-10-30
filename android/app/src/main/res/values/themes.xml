@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Modou" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/app_bg</item>
+        <!-- Android 12+ 冷启动闪屏底色（不写会退回 windowBackground，显式写更稳） -->
+        <item name="android:windowSplashScreenBackground">@color/app_bg</item>
+        <item name="android:statusBarColor">@color/app_bg</item>
+        <item name="android:navigationBarColor">@color/app_bg</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <!-- 夜间：开屏底色/系统栏跟着变暗。
+         WebView 内容绘制之前呈现的就是 windowBackground，不切的话夜间模式启动会刺眼一下。 -->
+    <style name="Theme.Modou.Dark" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/app_bg_dark</item>
+        <item name="android:windowSplashScreenBackground">@color/app_bg_dark</item>
+        <item name="android:statusBarColor">@color/app_bg_dark</item>
+        <item name="android:navigationBarColor">@color/app_bg_dark</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

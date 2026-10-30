@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>modou-source-service</title>
+</head>
+<body>
+<!--
+  书源服务宿主页：没有界面，只加载引擎门面。
+
+  必须挂在 http://127.0.0.1:PORT/ 下（与 UI 页面同源）而不是 file:// ——
+  引擎发请求走的是 location.origin + '/proxy'，只有同源才能让 /proxy 生效，
+  顺便也让 ES module 的 import 可用（file:// 下 module 会被 CORS 挡掉）。
+-->
+<script type="module">
+  import './js/engine/service.js';
+</script>
+<script>
+  // module 加载失败时原生会一直等不到 onReady，这里给个显式信号，免得排查时盲猜
+  window.addEventListener('error', function (e) {
+    try {
+      if (window.ModouSourceNative && window.ModouSourceNative.onLog) {
+        window.ModouSourceNative.onLog('service page error: ' + ((e && e.message) || e));
+      }
+    } catch (_) {}
+  });
+</script>
+</body>
+</html>
