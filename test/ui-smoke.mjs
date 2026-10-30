@@ -10,10 +10,10 @@
  */
 import { createRequire } from 'node:module';
 
-const require = createRequire('/root/.nvm/versions/node/v22.13.1/lib/node_modules/');
+const require = createRequire(import.meta.url);
 const { chromium } = require('playwright');
 
-const BASE = 'http://127.0.0.1:8080';
+const BASE = process.env.MODOU_BASE || 'http://127.0.0.1:8080';
 let pass = 0;
 let fail = 0;
 const check = (name, ok, detail = '') => {

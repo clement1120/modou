@@ -91,15 +91,29 @@ function mkIndexedDB(seed) {
   const maps = {};
   for (const [s, arr] of Object.entries(seed || {})) maps[s] = new Map(arr);
   const queue = (fn) => setTimeout(fn, 0);
+  let deleteCount = 0;
+  let closed = 0;
   // db.js 的迁移按主键范围游标分批读，mock 需提供这套 API
   globalThis.IDBKeyRange = {
     lowerBound: (lower, open) => ({ lower, open: !!open }),
   };
   return {
+    _deleteCount: () => deleteCount,
+    _closed: () => closed,
+    deleteDatabase(name) {
+      deleteCount++;
+      const req = {};
+      queue(() => {
+        for (const k of Object.keys(maps)) delete maps[k];
+        req.onsuccess && req.onsuccess();
+      });
+      return req;
+    },
     open() {
       const req = {};
       queue(() => {
         const db = {
+          close() { closed++; },
           objectStoreNames: { contains: (s) => !!maps[s] },
           transaction(store) {
             if (!maps[store]) maps[store] = new Map();
@@ -217,7 +231,11 @@ const freshDb = () => import('../web/js/db.js?case=' + ++uid);
   check('有桥未迁移：initStore 立即返回，不阻塞首屏（<50ms）', ms < 50, ms + 'ms');
   const done = await m.whenMigrationDone();
   check('有桥未迁移：后台迁移完成', done === true);
-  check('有桥未迁移：迁完写入标记（下次启动切 SQLite）', bridge.storeMigrated() === true);
+  await m.whenLegacyIdbCleared();
+  check('有桥未迁移：迁完写入标记', bridge.storeMigrated() === true);
+  check('有桥未迁移：迁移成功后立即切 SQLite', m.storeKind() === 'sqlite', m.storeKind());
+  check('有桥未迁移：旧 IndexedDB 连接已关闭', globalThis.indexedDB._closed() >= 1, String(globalThis.indexedDB._closed()));
+  check('有桥未迁移：旧 IndexedDB 已删除（不再占双份）', globalThis.indexedDB._deleteCount() === 1, String(globalThis.indexedDB._deleteCount()));
 }
 
 /* ==================== 2a2. 已迁移过：启动直接切 SQLite ==================== */
@@ -247,10 +265,10 @@ const freshDb = () => import('../web/js/db.js?case=' + ++uid);
   check('大量章节：首屏走 indexeddb', m.storeKind() === 'indexeddb', m.storeKind());
   await m.whenMigrationDone();
   check('大量章节：120 章全部搬进 SQLite', bridge.storeCount('chapters') === 120, String(bridge.storeCount('chapters')));
-  // 双写：后台迁移完成后本次会话仍在写 IndexedDB，新数据必须同步进 SQLite，
-  // 否则下次启动切到 SQLite 时会丢掉这段时间的进度/书签/设置
+  check('大量章节：迁完立即切 SQLite，不再双写', m.storeKind() === 'sqlite', m.storeKind());
+  // 切换后本次会话直接写 SQLite，不会出现「IndexedDB 有一份、SQLite 没有」
   await m.db.put('progress', { bookId: 'b9', index: 3 });
-  check('迁移后新写入同步进 SQLite（双写，防切换丢数据）', bridge.storeGet('progress', 'b9') != null);
+  check('迁移后新写入直接进 SQLite', bridge.storeGet('progress', 'b9') != null);
 }
 
 /* ==================== 2b. 有桥但 IndexedDB 不可用：绝不半切换 ==================== */
@@ -386,7 +404,10 @@ const freshDb = () => import('../web/js/db.js?case=' + ++uid);
   check('迁移中：界面照常读到书架', bk0 && bk0.name === '迁移书', JSON.stringify(bk0));
 
   await m.whenMigrationDone();
+  await m.whenLegacyIdbCleared();
   check('迁移：完成后写入标记（下次不再重迁）', bridge.storeMigrated() === true);
+  check('迁移：完成后立即切 SQLite', m.storeKind() === 'sqlite', m.storeKind());
+  check('迁移：旧 IndexedDB 已删除', globalThis.indexedDB._deleteCount() >= 1, String(globalThis.indexedDB._deleteCount()));
 
   // 数据确实落到了原生 SQLite（下次启动起就是唯一真相源）
   const jb = JSON.parse(bridge.storeGet('books', 'b1') || 'null');

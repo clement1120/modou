@@ -265,6 +265,55 @@ async function migrateStore(store) {
   }
 }
 
+/** 当前旧 IndexedDB 清理任务的句柄（测试/诊断用） */
+let legacyDropPromise = null;
+
+/**
+ * 删除迁移前的 IndexedDB。
+ *
+ * 迁移完成后 SQLite 就是唯一真相源，旧库留着只会让「书库体积」翻倍；
+ * 这正是 README 里一直挂着的「迁移后磁盘占用暂时翻倍」。删除前必须先关连接，
+ * 否则 Chromium 会以 blocked 挂住；blocked 时直接放弃，下次启动再试，不冒险。
+ */
+function dropLegacyIndexedDb() {
+  if (legacyDropPromise) return legacyDropPromise;
+  if (!sqlReady() || typeof indexedDB === 'undefined' || typeof indexedDB.deleteDatabase !== 'function') {
+    return Promise.resolve(false);
+  }
+  try {
+    if (_db) {
+      _db.close();
+      _db = null;
+    }
+  } catch (e) {
+    _db = null;
+  }
+  legacyDropPromise = new Promise((resolve) => {
+    let req;
+    try {
+      req = indexedDB.deleteDatabase(NAME);
+    } catch (e) {
+      resolve(false);
+      return;
+    }
+    let settled = false;
+    const done = (ok) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+    req.onsuccess = () => done(true);
+    req.onerror = () => done(false);
+    // blocked = 还有旧连接没关（例如网页版另一个标签页）：这次不强行删，
+    // 下次启动再试。绝不能为了省空间把当前会话的读写打断。
+    req.onblocked = () => done(false);
+  });
+  return legacyDropPromise;
+}
+
+/** 旧 IndexedDB 是否已经清掉（测试/诊断用） */
+export const whenLegacyIdbCleared = () => (legacyDropPromise ? legacyDropPromise : Promise.resolve(false));
+
 /**
  * 初始化存储层。**全量迁移绝不能挡在首屏前面**——曾把几千章正文的搬迁放在
  * 这里 await，界面几十秒不出内容，用户杀进程后下次启动又重来，卡成死循环。
@@ -280,6 +329,10 @@ export async function initStore() {
   try {
     if (BR().storeMigrated && BR().storeMigrated()) {
       useSqlite = true;
+      // 旧版 IndexedDB 只是迁移源，SQLite 已是唯一真相源。继续留着等于把
+      // 整份书库再存一遍（带插图的 EPUB 往往就是几个 GB）。这里只删旧库，
+      // 不碰 SQLite；删除失败也不影响本次使用，下次启动再试。
+      dropLegacyIndexedDb();
       return true;
     }
   } catch (e) {
@@ -330,11 +383,17 @@ export function startBackgroundMigration() {
         } catch (e) {
           /* 标记写失败：下次重迁一次，幂等 */
         }
-        // 双写：本次会话仍读 IndexedDB，但新写入同步进 SQLite，
-        // 否则用户在迁移期间产生的进度/书签/设置会在下次切换时丢失。
-        mirror = true;
+        // 迁移完整成功：立刻切到 SQLite，当前会话也不会再读旧 IndexedDB。
+        // 双写只适用于「迁移中」；切完再双写反而会多写一份。
+        useSqlite = true;
+        mirror = false;
+        // 旧库删除放在切通道之后：即使删除失败，本次读的也是完整 SQLite。
+        dropLegacyIndexedDb().finally(() => resolve(true));
+        return;
       }
-      resolve(ok);
+      mirror = false;
+      useSqlite = false;
+      resolve(false);
     };
     const step = () => {
       if (i >= stores.length) {

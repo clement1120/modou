@@ -119,6 +119,9 @@ public class ShelfActivity extends Activity {
         // 旧版本导入时会另存一份原文件副本到应用私有目录（每本书占两份空间）。
         // 现在改成读用户自己的文件夹、不再复制，这里把历史遗留的副本目录清一次。
         BookFiles.clearOldCopies(this);
+        // 旧版 IndexedDB / 导入临时文件 / 已删书的孤儿插图：启动后低优先级清一次。
+        // VACUUM 容易长时间占写锁，放到设置页的显式「深度回收」。
+        StorageJanitor.autoClean(this);
 
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);

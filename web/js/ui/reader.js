@@ -312,7 +312,7 @@ export async function renderReader(view, id, index, startHidden = false) {
         }
       }
       prefetchedFor = index;
-      if (prefetchedRaw != null) rawMem.set(index, prefetchedRaw);
+      if (prefetchedRaw != null) rawMemSet(index, prefetchedRaw);
     } catch (e) {
       prefetchedRaw = null;
     }
@@ -612,6 +612,45 @@ export async function renderReader(view, id, index, startHidden = false) {
    * 由 chapterHtmlAt 顺手写入，prefetchNeighbors 在空闲时预热相邻章。
    */
   const rawMem = new Map();
+  /**
+   * rawMem 原来是只进不出的 Map：读得越多，整本书（甚至多本书）的正文 HTML 就
+   * 一直留在 WebView 堆里。500MB 的书读一遍 = 再驻留一份 500MB，这是「占用是书
+   * 大小十几倍」最直接的一块。Legado 的 ACache 有 sizeLimit/countLimit，这里给
+   * rawMem 同样的两道闸：最多留 6 章、正文合计 8M 字符（实际 UTF-16 约 16MB）。
+   * 当前章和刚写入的章永不淘汰，其余按 LRU 出队；需要时从 chapters 表重取。
+   */
+  const RAW_MEM_MAX_CHAPTERS = 6;
+  const RAW_MEM_MAX_CHARS = 8 * 1024 * 1024;
+  let rawMemChars = 0;
+  const rawMemSet = (k, v) => {
+    if (typeof v !== 'string' || !v) return;
+    const old = rawMem.get(k);
+    if (old != null) rawMemChars -= old.length;
+    rawMem.delete(k);
+    rawMem.set(k, v);
+    rawMemChars += v.length;
+    while ((rawMem.size > RAW_MEM_MAX_CHAPTERS || rawMemChars > RAW_MEM_MAX_CHARS) && rawMem.size > 1) {
+      let victim = null;
+      for (const key of rawMem.keys()) {
+        if (key !== index && key !== k) {
+          victim = key;
+          break;
+        }
+      }
+      if (victim == null) break;
+      const gone = rawMem.get(victim);
+      rawMem.delete(victim);
+      rawMemChars -= gone ? gone.length : 0;
+    }
+  };
+  const rawMemGet = (k) => {
+    const v = rawMem.get(k);
+    if (v != null) {
+      rawMem.delete(k);
+      rawMem.set(k, v); // 命中即置为最近使用
+    }
+    return v;
+  };
   let switchWarmTimer = 0; // 切章后延迟预热的定时器（避开滑入动画）
   let switchGen = 0; // 切章代号：异步切章回来时若已换人，直接作废
   let pagesEl = null;
@@ -2408,13 +2447,13 @@ export async function renderReader(view, id, index, startHidden = false) {
     const isPreview = !!book.preview;
     const key = id + '||' + i;
     const chapName = (book.chapters[i] || {}).name || '';
-    if (rawMem.has(i)) return renderChapterHtml(rawMem.get(i), chapName); // 内存命中：同步路径，跨章翻页用
+    if (rawMem.has(i)) return renderChapterHtml(rawMemGet(i), chapName); // 内存命中：同步路径，跨章翻页用
     // 书架按下封面时已经预取这一章：直接等那个 Promise，省掉一次网络往返
     const prefetchP = takePrefetch(book, i);
     if (prefetchP) {
       const content = await prefetchP;
       if (content) {
-        rawMem.set(i, content);
+        rawMemSet(i, content);
         if (!isPreview) {
           try {
             await db.put('chapters', { id: key, content, cachedAt: Date.now() });
@@ -2455,7 +2494,7 @@ export async function renderReader(view, id, index, startHidden = false) {
       }
     }
     if (html == null) return null;
-    rawMem.set(i, html); // 留一份原始正文，供跨章原地切换
+    rawMemSet(i, html); // 留一份原始正文，供跨章原地切换
     return renderChapterHtml(html, chapName);
   };
 
@@ -3012,12 +3051,12 @@ export async function renderReader(view, id, index, startHidden = false) {
       const key = id + '||' + ni;
       const cached = await db.get('chapters', key);
       if (cached) {
-        if (cached.content != null) rawMem.set(ni, cached.content); // 顺手进内存，跨章可走原地切换
+        if (cached.content != null) rawMemSet(ni, cached.content); // 顺手进内存，跨章可走原地切换
         return;
       }
       const r = await src.getContent(book, book.chapters[ni]);
       if (!r.error && r.content) {
-        rawMem.set(ni, r.content);
+        rawMemSet(ni, r.content);
         await db.put('chapters', { id: key, content: r.content, cachedAt: Date.now() });
       }
     } catch (e) {
@@ -3122,7 +3161,7 @@ export async function renderReader(view, id, index, startHidden = false) {
     if (Date.now() - gGestureAt < 400) return; // 手势进行中/刚结束，别抢主线程
     dropStalePages();
     if (pageCache.has(i)) return;
-    const raw = rawMem.get(i);
+    const raw = rawMemGet(i);
     if (raw == null) return; // 正文还没预热到，等 prefetchNeighbors 回来再触发
     const rb = $('#r-body');
     if (!rb) return;
@@ -3199,7 +3238,7 @@ export async function renderReader(view, id, index, startHidden = false) {
    */
   /** 取某章原始正文（内存 → 试读缓存 → chapters 表 → 联网），并写入内存 */
   const loadRaw = async (i) => {
-    if (rawMem.has(i)) return rawMem.get(i);
+    if (rawMem.has(i)) return rawMemGet(i);
     let html = null;
     try {
       if (book.preview) {
@@ -3225,7 +3264,7 @@ export async function renderReader(view, id, index, startHidden = false) {
     } catch (e) {
       html = null;
     }
-    if (html != null) rawMem.set(i, html);
+    if (html != null) rawMemSet(i, html);
     return html;
   };
 
@@ -3242,7 +3281,7 @@ export async function renderReader(view, id, index, startHidden = false) {
    */
   const applyChapter = (ni, opts = {}) => {
     if (ni < 0 || ni >= total || ni === index) return false;
-    const raw = rawMem.get(ni);
+    const raw = rawMemGet(ni);
     if (raw == null) return false;
     const body = $('#r-body');
     if (!body) return false;

@@ -21,17 +21,26 @@ export async function fetchViaProxy(url, opts = {}) {
   const origin = typeof location !== 'undefined' ? location.origin : 'http://127.0.0.1:8080';
   const target = origin + '/proxy?' + q.toString();
 
-  // 简易重试：应对站点限流/抖动（书源场景很常见）
+  // 简易重试：应对站点限流/抖动（书源场景很常见）。批量体检时关掉重试，
+  // 否则一个假死源要等 2 个超时窗口，整批体检会被拖到不可用。
   let lastErr = null;
   // 每个请求超时兜底：书源站点慢/假死时不能让 fetch 永久挂起，
   // 否则正文/搜索会一直"加载中"。opts.timeout 可覆盖（ms）。
   const timeout = Number(opts.timeout) > 0 ? Number(opts.timeout) : 15000;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const retries = Number.isFinite(Number(opts.retries))
+    ? Math.max(0, Math.min(3, Number(opts.retries)))
+    : 1;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (opts.signal && opts.signal.aborted) throw new Error('已取消');
     const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    const timer = ctrl ? setTimeout(() => ctrl.abort(), timeout) : null;
+    let timedOut = false;
+    const timer = ctrl ? setTimeout(() => { timedOut = true; ctrl.abort(); }, timeout) : null;
+    const onOuterAbort = () => ctrl && ctrl.abort();
+    if (opts.signal && ctrl) opts.signal.addEventListener('abort', onOuterAbort, { once: true });
     try {
       const r = await fetch(target, { method: 'GET', signal: ctrl ? ctrl.signal : undefined });
       if (timer) clearTimeout(timer);
+      if (opts.signal) opts.signal.removeEventListener('abort', onOuterAbort);
       const j = await r.json();
       if (j.ok === false && j.error) throw new Error(j.error);
       return {
@@ -44,8 +53,15 @@ export async function fetchViaProxy(url, opts = {}) {
       };
     } catch (e) {
       if (timer) clearTimeout(timer);
+      if (opts.signal) opts.signal.removeEventListener('abort', onOuterAbort);
       lastErr = e;
-      if (attempt === 0) await new Promise((res) => setTimeout(res, 800));
+      // 主动取消 / 已经超时：不再重试，直接把可读原因抛给上层
+      if ((opts.signal && opts.signal.aborted) || e.name === 'AbortError') {
+        if (timedOut) throw new Error(`请求超时（${Math.round(timeout / 1000)}s）`);
+        if (opts.signal && opts.signal.aborted) throw new Error('已取消');
+        throw e;
+      }
+      if (attempt < retries) await new Promise((res) => setTimeout(res, 800));
     }
   }
   throw lastErr instanceof Error ? lastErr : new Error('网络请求失败');

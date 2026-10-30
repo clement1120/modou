@@ -19,3 +19,6 @@ Thumbs.db
 # 临时
 *.log
 /tmp/
+
+# Playwright 本地浏览器缓存（体积大，不入库）
+.playwright-browsers/
