@@ -74,6 +74,7 @@ public class SearchActivity extends Activity {
         int p = ModouUi.dp(this, 14);
         body.setPadding(p, p, p, p);
         sv.addView(body);
+        sv.setOnScrollChangeListener((v, sx, sy, osx, osy) -> CoverLoader.markScroll());
 
         body.addView(buildHead());
         body.addView(buildBar());

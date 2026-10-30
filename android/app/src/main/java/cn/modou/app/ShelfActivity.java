@@ -1411,6 +1411,7 @@ public class ShelfActivity extends Activity {
         @Override
         protected void onScrollChanged(int x, int y, int ox, int oy) {
             super.onScrollChanged(x, y, ox, oy);
+            CoverLoader.markScroll();
             if (pinned == null) return;
             int sy = getScrollY();
             int active = -1;
