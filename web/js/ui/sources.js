@@ -22,6 +22,16 @@ const srcFilter = { check: 'all', enabled: 'all', group: '' }; // 顶部 chip �
 const srcKw = { v: '' }; // 名称搜索词
 let checkAllRunning = false;
 let checkAllStop = false;
+let checkToken = null;
+
+/* 批量体检的预算。Legado 默认给单源 180s，手机端完全等不起；
+ * 这里压到 45s（搜索+详情+目录+最多两章正文），单请求 12s 且不重试，
+ * 一个假死源最多占一个 worker 45s，不会把整批拖死。 */
+const CHECK_TIMEOUT_MS = 45000;
+const CHECK_REQUEST_TIMEOUT_MS = 12000;
+const CHECK_THREADS = 4;
+const CHECK_CONTENT_CHAPTERS = 2;
+const checkArtifacts = new Map(); // 快速校验产物，深度校验复用，避免重复请求
 
 /** 失败原因压成一行，别把整段堆栈塞进 toast/相机 */
 const brief = (e) => String((e && e.message) || e || '').replace(/\s+/g, ' ').slice(0, 120);
@@ -308,6 +318,7 @@ function srcState(s) {
     return { key: 'deepbad', label: both ? '两次失效' : '深度失效', cls: 'ck-bad', title: `${d.step || ''}：${d.reason || ''}` };
   }
   const q = checkResults.get(u);
+  if (q === 'pending') return { key: 'run', label: '排队中', cls: 'ck-run', title: '' };
   if (q === 'ok') return { key: 'ok', label: '有效', cls: 'ck-ok', title: '' };
   if (q === 'bad') return { key: 'bad', label: '失效', cls: 'ck-bad', title: failReasons.get(u) || '' };
   if (q === 'run') return { key: 'run', label: '校验中', cls: 'ck-run', title: '' };
@@ -907,6 +918,7 @@ const checkUI = {
   stage: 'idle', // idle | quick | quickdone | stopped | deep | done
   keyword: '',
   cur: '',
+  active: [],
   quick: { done: 0, total: 0, ok: 0, bad: 0 },
   deep: { done: 0, total: 0, pass: 0, fail: 0 },
 };
@@ -916,8 +928,11 @@ function mkStopBtn() {
   b.disabled = checkAllStop;
   b.onclick = () => {
     checkAllStop = true;
+    // 立即断掉在途 fetch，而不是等 12s 单请求超时；worker 会在 catch 里退出。
+    try { checkToken && checkToken.ctrl.abort(); } catch (e) { /* 已结束 */ }
     b.disabled = true;
     b.textContent = '停止中…';
+    paintCheckBar();
   };
   return b;
 }
@@ -953,12 +968,12 @@ function paintCheckBar() {
 
   if (st === 'quick') {
     head = `① 快速校验 <b>${q.done}</b>/${q.total} · 有效 <b class="c-ok">${q.ok}</b> · 失效 <b class="c-bad">${q.bad}</b>`;
-    subText = checkUI.cur;
+    subText = checkUI.cur || '搜索 → 详情 → 目录，单源总预算 45s';
     prog = q.total ? q.done / q.total : 0;
     acts.push(mkStopBtn());
   } else if (st === 'deep') {
     head = `② 深度校验 <b>${d.done}</b>/${d.total} · 通过 <b class="c-ok">${d.pass}</b> · 失败 <b class="c-bad">${d.fail}</b>`;
-    subText = checkUI.cur || '搜索 → 详情 → 目录 → 正文，每个源最多 4 次请求';
+    subText = checkUI.cur || '搜索 → 详情 → 目录 → 正文×2，单源总预算 45s';
     prog = d.total ? d.done / d.total : 0;
     acts.push(mkStopBtn());
   } else if (st === 'quickdone' || st === 'stopped') {
@@ -1012,7 +1027,7 @@ function openCheckAllSheet() {
   const body = h('div', { class: 'form' });
   body.append(
     h('p', { class: 'muted small' },
-      `对 ${state.sources.length} 个书源先各跑一次搜索（快），再只对失败的跑四步深度校验（搜索→详情→目录→正文），最后列出「两次都不合格」的源，可一键删除。`)
+      `对 ${state.sources.length} 个书源先各跑一次「搜索→详情→目录」（快），再只对失败的补跑正文深度校验（最多两章）。单源 45 秒、4 并发，可随时停止。最后列出「两次都不合格」的源，可一键删除。`)
   );
   const kw = h('input', { value: '我的', placeholder: '校验关键词' });
   const auto = h('input', { type: 'checkbox', checked: true });
@@ -1030,6 +1045,168 @@ function openCheckAllSheet() {
   const sheet = openSheet('书源体检', body);
 }
 
+/* ---------- 体检执行 ---------- */
+
+function newCheckToken() {
+  const ctrl = new AbortController();
+  return { ctrl, signal: ctrl.signal, active: new Set(), cancelled: false };
+}
+
+function abortToken(token) {
+  if (!token) return;
+  token.cancelled = true;
+  try { token.ctrl.abort(); } catch (e) { /* 已结束 */ }
+}
+
+/** 单源总预算：超时就 abort 本源的请求，worker 继续下一个 */
+function runWithDeadline(fn, ms, ctrl) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      try { ctrl.abort(); } catch (e) { /* 已结束 */ }
+      reject(new Error('超时'));
+    }, ms);
+    Promise.resolve()
+      .then(fn)
+      .then(
+        (v) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          resolve(v);
+        },
+        (e) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          reject(e);
+        }
+      );
+  });
+}
+
+function activeText(token) {
+  if (!token || !token.active.size) return '';
+  return '正在：' + [...token.active].join('、');
+}
+
+function paintActive(token) {
+  checkUI.active = token ? [...token.active] : [];
+  checkUI.cur = activeText(token);
+}
+
+function reasonOf(e, step) {
+  const m = brief(e);
+  if (/超时|timeout/i.test(m)) return `${step}超时`;
+  if (/取消|cancel|abort/i.test(m)) return '已取消';
+  if (/403|401/.test(m)) return `${step}被拒绝（HTTP 401/403，可能反爬）`;
+  if (/404/.test(m)) return `${step}地址失效（HTTP 404）`;
+  return `${step}：${m || '未知错误'}`;
+}
+
+/**
+ * 单源全链路。
+ *
+ * quick = 搜索 → 详情 → 目录（Legado 默认也会校验 info/category；只跑搜索会
+ *         把「能搜到但详情/目录全坏」的源误判为有效，用户点进去才发现打不开）。
+ * deep  = 再加前两章正文，专抓 nextContentUrl / 第二章起规则失效。
+ */
+async function checkOne(src, mode, keyword, token) {
+  const t0 = Date.now();
+  const fail = (step, reason) => ({ state: 'bad', step, reason, ms: Date.now() - t0 });
+  const local = new AbortController();
+  const onGlobalAbort = () => { try { local.abort(); } catch (e) { /* 已结束 */ } };
+  if (token) token.signal.addEventListener('abort', onGlobalAbort, { once: true });
+  src.setRequestPolicy({ timeout: CHECK_REQUEST_TIMEOUT_MS, retries: 0, signal: local.signal });
+  const logs = [];
+  const diag = {};
+  try {
+    const work = async () => {
+      if (!src.searchUrl) return { state: 'nosearch', step: '搜索', reason: '没有 searchUrl，不参与搜索校验' };
+      const cached = mode === 'deep' ? checkArtifacts.get(src.bookSourceUrl) : null;
+      if (cached && cached.keyword === keyword) {
+        // 快速校验已经拿到详情/目录：深度只补正文，少打两次请求
+        return await checkContentChapters(src, cached.info, cached.chapters, logs, t0, fail);
+      }
+      if (mode === 'quick') checkArtifacts.delete(src.bookSourceUrl);
+
+      const s = await src.search(keyword);
+      diag.status = s.status || 0;
+      diag.finalUrl = s.finalUrl || '';
+      diag.snip = s.snip || '';
+      diag.bytes = s.bytes || 0;
+      diag.charset = s.charset || '';
+      if (s.logs && s.logs.length) logs.push(...s.logs.slice(-12));
+      if (s.error) return fail('搜索', reasonOf(s.error, '搜索'));
+      if (s.status === 403 || s.status === 401) return fail('搜索', `搜索被拒绝（HTTP ${s.status}，可能反爬）`);
+      if (s.status === 404) return fail('搜索', '搜索地址失效（HTTP 404）');
+      if (!Array.isArray(s.list) || !s.list.length) {
+        if (s.logs && s.logs.some((l) => /checkKeyWord/.test(l))) {
+          return { state: 'skip', step: '搜索', reason: '校验词未命中页面关键词（换词再试）', ms: Date.now() - t0 };
+        }
+        return fail('搜索', (s.logs && s.logs.filter((l) => !/^GET /.test(l)).join(' | ')) || '返回 0 条（查 searchUrl / ruleSearch.bookList）');
+      }
+      const first = s.list[0];
+      if (!first || !first.bookUrl) return fail('搜索', '第一条结果缺少 bookUrl');
+
+      const bi = await src.getBookInfo(first);
+      if (bi.logs && bi.logs.length) logs.push(...bi.logs.slice(-8));
+      if (bi.error || !bi.info) return fail('详情', reasonOf(bi.error, '详情') || '详情页解析为空');
+      const info = bi.info;
+
+      const toc = await src.getToc(info);
+      if (toc.logs && toc.logs.length) logs.push(...toc.logs.slice(-12));
+      if (toc.error) return fail('目录', reasonOf(toc.error, '目录'));
+      if (!toc.chapters || !toc.chapters.length) return fail('目录', '未解析到章节（查 ruleBookInfo.tocUrl / ruleToc.chapterList）');
+
+      // 只留前几章：给深度校验复用，也避免把几千章数组整场攥在内存里
+      checkArtifacts.set(src.bookSourceUrl, {
+        keyword,
+        info,
+        chapters: toc.chapters.slice(0, CHECK_CONTENT_CHAPTERS),
+      });
+
+      if (mode !== 'deep') {
+        return { state: 'ok', step: '搜索 / 详情 / 目录', reason: '', ms: Date.now() - t0 };
+      }
+      return await checkContentChapters(src, info, toc.chapters, logs, t0, fail);
+    };
+
+    const r = await runWithDeadline(work, CHECK_TIMEOUT_MS, local);
+    checkDiag.set(src.bookSourceUrl, { ...diag, logs: logs.slice(-30), ms: Date.now() - t0 });
+    return r;
+  } catch (e) {
+    checkDiag.set(src.bookSourceUrl, { ...diag, logs: logs.slice(-30), ms: Date.now() - t0 });
+    if (token && token.cancelled) return { state: 'cancelled', step: '已取消', reason: '已取消', ms: Date.now() - t0 };
+    if (String(e && e.message) === '超时') {
+      return { state: 'bad', step: '超时', reason: `单源超过 ${CHECK_TIMEOUT_MS / 1000}s（搜索/详情/目录/正文未跑完）`, ms: Date.now() - t0 };
+    }
+    return fail('异常', reasonOf(e, '异常'));
+  } finally {
+    if (token) {
+      try { token.signal.removeEventListener('abort', onGlobalAbort); } catch (e) { /* 已结束 */ }
+    }
+    src.clearRequestPolicy();
+  }
+}
+
+/** 深度校验正文两章；抽出来给「快速校验产物复用」和完整链路共用 */
+async function checkContentChapters(src, info, chapters, logs, t0, fail) {
+  const n = Math.min(CHECK_CONTENT_CHAPTERS, chapters ? chapters.length : 0);
+  let chars = 0;
+  for (let i = 0; i < n; i++) {
+    const ch = chapters[i];
+    const c = await src.getContent(info, ch);
+    if (c.logs && c.logs.length) logs.push(...c.logs.slice(-8));
+    if (c.error) return fail(i === 0 ? '正文' : `正文（第 ${i + 1} 章）`, reasonOf(c.error, '正文'));
+    if (!c.content) return fail(i === 0 ? '正文' : `正文（第 ${i + 1} 章）`, '正文为空（查 ruleContent.content）');
+    chars += c.content.length;
+  }
+  return { state: 'ok', step: n > 1 ? '搜索 / 详情 / 目录 / 正文×2' : '搜索 / 详情 / 目录 / 正文', reason: '', ms: Date.now() - t0, chars };
+}
+
 async function runCheckAll(keyword, only = null, opts = {}) {
   if (checkAllRunning) return toast('体检进行中');
   const sources = (only || [...state.sources]).filter(Boolean);
@@ -1037,99 +1214,101 @@ async function runCheckAll(keyword, only = null, opts = {}) {
   if (!$('#checkall-bar')) return;
   checkAllRunning = true;
   checkAllStop = false;
+  const token = newCheckToken();
+  checkToken = token;
+  checkArtifacts.clear();
   try {
-    await quickPass(sources, keyword);
-    // 只对「快速校验判失效」的源做深度校验；skip（校验词没命中）不算失效
-    const badList = sources.filter((s) => checkResults.get(s.bookSourceUrl) === 'bad');
-    if (checkAllStop) {
+    await quickPass(sources, keyword, token);
+    if (token.cancelled || checkAllStop) {
       checkUI.stage = 'stopped';
       return;
     }
+    const badList = sources.filter((s) => checkResults.get(s.bookSourceUrl) === 'bad');
     if (!badList.length || !opts.autoDeep) {
       checkUI.stage = 'quickdone';
       return;
     }
-    await deepPass(badList, keyword);
+    await deepPass(badList, keyword, token);
+    checkUI.stage = token.cancelled ? 'stopped' : 'done';
   } finally {
+    checkToken = null;
     checkAllRunning = false;
+    checkArtifacts.clear();
+    checkUI.active = [];
+    checkUI.cur = '';
     paintCheckBar();
   }
 }
 
-/** ① 快速校验：只跑搜索一步，判定「能用 / 不能用 / 未判定」 */
-async function quickPass(sources, keyword) {
+/** ① 快速校验：搜索 → 详情 → 目录。不再只凭「搜到东西」判有效。 */
+async function quickPass(sources, keyword, token) {
   checkUI.stage = 'quick';
   checkUI.keyword = keyword;
+  checkUI.active = [];
   checkUI.cur = '';
   checkUI.quick = { done: 0, total: sources.length, ok: 0, bad: 0 };
   paintCheckBar();
   const q = checkUI.quick;
 
+  for (const s of sources) {
+    checkResults.delete(s.bookSourceUrl);
+    deepResults.delete(s.bookSourceUrl);
+    failReasons.delete(s.bookSourceUrl);
+    checkResults.set(s.bookSourceUrl, 'pending');
+  }
+  renderList();
+
   const queue = [...sources];
   const worker = async () => {
-    while (queue.length && !checkAllStop) {
-      // 已离开书源页：挂起等待（切 tab 看别的页面时不再占主线程，回来自动继续）
-      while (!checkAllStop && !String(location.hash || '').startsWith('#/sources')) await yieldUI(400);
-      if (checkAllStop) return;
+    while (queue.length && !token.cancelled) {
       const s = queue.shift();
       if (!s) return;
-      // 重新快速校验 → 旧的深度结论作废，否则「两次失效」会拿旧数据骗人
-      deepResults.delete(s.bookSourceUrl);
-      if (!s.searchUrl) {
-        // 只有发现页/登录态的源没有搜索能力，不算失效
-        checkResults.set(s.bookSourceUrl, 'nosearch');
-        updateRowStatus(s.bookSourceUrl, s.bookSourceName);
-        q.done++;
-        paintCheckBar();
-        continue;
-      }
       checkResults.set(s.bookSourceUrl, 'run');
+      token.active.add(s.bookSourceName || s.bookSourceUrl);
+      paintActive(token);
       updateRowStatus(s.bookSourceUrl, s.bookSourceName);
-      let good = false;
-      let reason = '';
-      let isSkip = false;
-      const t0 = Date.now();
-      try {
-        const r = await s.search(keyword);
-        checkDiag.set(s.bookSourceUrl, {
-          logs: r.logs || [],
-          status: r.status || 0,
-          finalUrl: r.finalUrl || '',
-          snip: r.snip || '',
-          bytes: r.bytes || 0,
-          charset: r.charset || '',
-          ms: Date.now() - t0,
-        });
-        if (r.error) reason = '请求失败：' + brief(r.error);
-        else if (Array.isArray(r.list) && r.list.length > 0) good = true;
-        else if (r.logs && r.logs.some((l) => /checkKeyWord/.test(l))) {
-          // 关键词没命中只说明"这次搜的词不对"，并不证明源坏了（开源阅读同样不据此判死）
-          isSkip = true;
-          reason = '校验词未命中页面关键词（未判定，可换个词再校验）';
-        } else reason = (r.logs && r.logs.filter((l) => !/^GET /.test(l)).join(' | ')) || '返回 0 条（规则未解析到结果）';
-      } catch (e) {
-        reason = '异常：' + brief(e);
-      }
-      if (good) {
+      paintCheckBar();
+
+      const r = await checkOne(s, 'quick', keyword, token);
+      token.active.delete(s.bookSourceName || s.bookSourceUrl);
+      paintActive(token);
+
+      if (r.state === 'cancelled') {
+        checkResults.set(s.bookSourceUrl, 'skip');
+        failReasons.set(s.bookSourceUrl, '已取消');
+      } else if (r.state === 'ok') {
         q.ok++;
         checkResults.set(s.bookSourceUrl, 'ok');
-      } else if (isSkip) {
+      } else if (r.state === 'skip') {
         checkResults.set(s.bookSourceUrl, 'skip');
-        failReasons.set(s.bookSourceUrl, reason);
+        failReasons.set(s.bookSourceUrl, r.reason || '未判定');
+      } else if (r.state === 'nosearch') {
+        checkResults.set(s.bookSourceUrl, 'nosearch');
+        failReasons.set(s.bookSourceUrl, r.reason || '没有 searchUrl');
       } else {
         q.bad++;
         checkResults.set(s.bookSourceUrl, 'bad');
-        failReasons.set(s.bookSourceUrl, reason);
+        failReasons.set(s.bookSourceUrl, `${r.step || ''}：${r.reason || '未通过'}`.replace(/^：/, ''));
       }
-      updateRowStatus(s.bookSourceUrl, s.bookSourceName);
       q.done++;
-      checkUI.cur = `正在：${s.bookSourceName || s.bookSourceUrl}`;
+      updateRowStatus(s.bookSourceUrl, s.bookSourceName);
       paintCheckBar();
-      await yieldUI(16); // 让出主线程：不连续霸占 UI 线程，切页与滚动才不卡
+      await yieldUI(8);
     }
   };
-  // 并发 3：手机端更高并发 + JSON/DOM 解析会把主线程压满（切 tab 卡顿的直接原因）
-  await Promise.all(Array.from({ length: Math.min(3, queue.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(CHECK_THREADS, queue.length) }, worker));
+  if (token.cancelled) {
+    // 停止后队列里没跑的源不能永远停在「排队中」
+    for (const s of sources) {
+      if (checkResults.get(s.bookSourceUrl) === 'pending' || checkResults.get(s.bookSourceUrl) === 'run') {
+        checkResults.set(s.bookSourceUrl, 'skip');
+        failReasons.set(s.bookSourceUrl, '已停止，未校验');
+        updateRowStatus(s.bookSourceUrl, s.bookSourceName);
+      }
+    }
+  }
+  checkUI.active = [];
+  checkUI.cur = '';
 }
 
 async function runDeepOnly(list, keyword) {
@@ -1137,18 +1316,23 @@ async function runDeepOnly(list, keyword) {
   if (!$('#checkall-bar')) return;
   checkAllRunning = true;
   checkAllStop = false;
+  const token = newCheckToken();
+  checkToken = token;
   try {
-    await deepPass(list, keyword);
+    await deepPass(list, keyword, token);
+    checkUI.stage = token.cancelled ? 'stopped' : 'done';
   } finally {
+    checkToken = null;
     checkAllRunning = false;
     paintCheckBar();
   }
 }
 
-/** ② 深度校验：对一批源跑四步全链路，只更新状态，不整表重画 */
-async function deepPass(list, keyword) {
+/** ② 深度校验：搜索 → 详情 → 目录 → 正文 ×2（复用快速校验的结果，少打两次请求） */
+async function deepPass(list, keyword, token) {
   checkUI.stage = 'deep';
   checkUI.keyword = keyword;
+  checkUI.active = [];
   checkUI.cur = '';
   checkUI.deep = { done: 0, total: list.length, pass: 0, fail: 0 };
   paintCheckBar();
@@ -1156,26 +1340,35 @@ async function deepPass(list, keyword) {
 
   const queue = [...list];
   const worker = async () => {
-    while (queue.length && !checkAllStop) {
-      while (!checkAllStop && !String(location.hash || '').startsWith('#/sources')) await yieldUI(400);
-      if (checkAllStop) return;
+    while (queue.length && !token.cancelled) {
       const s = queue.shift();
       if (!s) return;
       deepResults.set(s.bookSourceUrl, { state: 'run' });
+      token.active.add(s.bookSourceName || s.bookSourceUrl);
+      paintActive(token);
       updateRowStatus(s.bookSourceUrl, s.bookSourceName);
-      const r = await deepCheckOne(s, keyword);
-      deepResults.set(s.bookSourceUrl, r);
-      updateRowStatus(s.bookSourceUrl, s.bookSourceName);
-      if (r.state === 'ok') d.pass++;
-      else d.fail++;
-      d.done++;
-      checkUI.cur = `正在：${s.bookSourceName || s.bookSourceUrl}`;
       paintCheckBar();
-      await yieldUI(16);
+
+      const r = await checkOne(s, 'deep', keyword, token);
+      token.active.delete(s.bookSourceName || s.bookSourceUrl);
+      paintActive(token);
+      if (r.state === 'cancelled') {
+        deepResults.delete(s.bookSourceUrl);
+        checkResults.set(s.bookSourceUrl, 'skip');
+        failReasons.set(s.bookSourceUrl, '已取消');
+      } else {
+        deepResults.set(s.bookSourceUrl, r);
+        if (r.state === 'ok') d.pass++;
+        else d.fail++;
+      }
+      d.done++;
+      updateRowStatus(s.bookSourceUrl, s.bookSourceName);
+      paintCheckBar();
+      await yieldUI(8);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(3, queue.length) }, worker));
-  checkUI.stage = 'done';
+  await Promise.all(Array.from({ length: Math.min(CHECK_THREADS, queue.length) }, worker));
+  if (!token.cancelled) checkUI.stage = 'done';
 }
 
 /** ③ 一键删除「两次都不合格」 */
@@ -1190,37 +1383,14 @@ async function deleteBothBad(list) {
     deepResults.delete(s.bookSourceUrl);
     failReasons.delete(s.bookSourceUrl);
     checkDiag.delete(s.bookSourceUrl);
+    checkArtifacts.delete(s.bookSourceUrl);
   }
   await reloadSources();
   if (srcFilter.check === 'both') srcFilter.check = 'all';
   checkUI.stage = 'idle';
   renderList();
-  paintCheckBar(); // 清空并隐藏体检条（结果里的目标已被删掉，留着只会误导）
+  paintCheckBar();
   toast(`已删除 ${list.length} 个书源`);
-}
-
-/** 单源四步全链路，返回结构化结论（深度校验与单源弹窗共用同一套判定） */
-async function deepCheckOne(src, keyword) {
-  const t0 = Date.now();
-  const fail = (step, reason) => ({ state: 'bad', step, reason, ms: Date.now() - t0 });
-  try {
-    const s = await src.search(keyword);
-    if (s.error) return fail('搜索', '请求失败：' + brief(s.error));
-    if (!Array.isArray(s.list) || !s.list.length) return fail('搜索', '搜索无结果（查 searchUrl / ruleSearch.bookList）');
-    const first = s.list[0];
-    const bi = await src.getBookInfo(first);
-    if (bi.error || !bi.info) return fail('详情', brief(bi.error) || '详情页解析为空');
-    const info = bi.info;
-    const toc = await src.getToc(info);
-    if (toc.error) return fail('目录', brief(toc.error));
-    if (!toc.chapters || !toc.chapters.length) return fail('目录', '未解析到章节（查 ruleBookInfo.tocUrl）');
-    const c = await src.getContent(info, toc.chapters[0]);
-    if (c.error) return fail('正文', brief(c.error));
-    if (!c.content) return fail('正文', '正文为空（查 ruleContent.content）');
-    return { state: 'ok', step: '全部通过', reason: '', ms: Date.now() - t0, chars: c.content.length };
-  } catch (e) {
-    return fail('异常', brief(e));
-  }
 }
 
 /* ---------- 查重 ---------- */
@@ -1353,6 +1523,8 @@ function openCheckModal(src) {
     if (!keyword) return toast('先输入关键词');
     out.innerHTML = '';
     go.disabled = true;
+    // 单源也走同一套预算：单请求 12s、不重试，避免一个死链把弹窗挂住几分钟
+    src.setRequestPolicy({ timeout: CHECK_REQUEST_TIMEOUT_MS, retries: 0 });
     try {
       out.append(h('h4', {}, '① 搜索'));
       const s = await src.search(keyword);
@@ -1398,6 +1570,7 @@ function openCheckModal(src) {
     } catch (e) {
       out.append(line('异常', e.message, false));
     } finally {
+      src.clearRequestPolicy();
       go.disabled = false;
     }
   };

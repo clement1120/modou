@@ -41,6 +41,7 @@ final class SettingsPanel {
     private LinearLayout body;
     private TextView cacheStat;
     private TextView readStat;
+    private TextView storageVal;
 
     SettingsPanel(Activity host) {
         this.host = host;
@@ -154,16 +155,14 @@ final class SettingsPanel {
         readLine.addView(readStat);
         data.addView(readLine);
         data.addView(ModouUi.groupDivider(host));
-        long dbBytes = ModouStore.get(host).dbBytes();
-        data.addView(ui.groupRow(host, "书库占用", BookFiles.sizeText(dbBytes),
-                "正文按章缓存在书库里，点一下看明细", () -> {
-                    long db = ModouStore.get(host).dbBytes();
-                    java.io.File base = host.getExternalFilesDir(null);
-                    if (base == null) base = host.getFilesDir();
-                    ModouUi.toast(host, "书库 " + BookFiles.sizeText(db)
-                            + " · 应用文件 " + BookFiles.sizeText(dirBytes(base))
-                            + "（原文件留在你选的文件夹里，不占这里的空间）");
-                }));
+        LinearLayout storageRow = ui.groupRow(host, "书库占用",
+                BookFiles.sizeText(ModouStore.get(host).dbBytes()),
+                "数据库 + 插图 + 封面 + 临时文件，点开做体检与回收", this::openStorage);
+        // groupRow 的第 2 个 child 是右侧数值，保留引用以便回收后原地刷新
+        if (storageRow.getChildCount() > 1 && storageRow.getChildAt(1) instanceof TextView) {
+            storageVal = (TextView) storageRow.getChildAt(1);
+        }
+        data.addView(storageRow);
         data.addView(ModouUi.groupDivider(host));
         data.addView(ui.groupRow(host, "导出全部数据", "", "JSON 备份", this::exportBackup));
         data.addView(ModouUi.groupDivider(host));
@@ -218,6 +217,41 @@ final class SettingsPanel {
         host.recreate();
     }
 
+    /** 存储体检：先给明细，再让用户决定是否深度回收 */
+    private void openStorage() {
+        new Thread(() -> {
+            final String report = StorageJanitor.report(host);
+            host.runOnUiThread(() -> ModouUi.confirm(host, "存储体检",
+                    report + "\n\n「深度回收」会删除移出书架超过 7 天的孤儿正文、"
+                            + "已无书引用的插图和封面、导入残留文件，并压缩数据库空页。"
+                            + "数据库很大时可能需要一会儿。",
+                    this::deepCleanStorage));
+        }, "modou-storage-report").start();
+    }
+
+    private void deepCleanStorage() {
+        ModouUi.toast(host, "正在回收空间…");
+        new Thread(() -> {
+            final long freed = StorageJanitor.clean(host, true);
+            host.runOnUiThread(() -> {
+                ModouUi.toast(host, freed > 0
+                        ? "已回收 " + BookFiles.sizeText(freed)
+                        : "没有可回收的空间");
+                refreshCache();
+                refreshStorage();
+            });
+        }, "modou-storage-clean").start();
+    }
+
+    private void refreshStorage() {
+        new Thread(() -> {
+            final long total = StorageJanitor.appBytes(host);
+            host.runOnUiThread(() -> {
+                if (storageVal != null) storageVal.setText(BookFiles.sizeText(total));
+            });
+        }).start();
+    }
+
     /* ---------------- 缓存统计 ---------------- */
 
     private void refreshCache() {
@@ -233,9 +267,18 @@ final class SettingsPanel {
 
     private void clearCache() {
         ModouUi.confirm(host, "清空正文缓存", "已读章节需要联网重新获取，确定清空？", () -> {
-            store.clear("chapters");
-            ModouUi.toast(host, "正文缓存已清空");
-            refreshCache();
+            new Thread(() -> {
+                store.clear("chapters");
+                // 删行只是把页标成空闲，不 VACUUM 文件大小不会变；
+                // 这里先 checkpoint，再按空闲页量决定是否真正压缩。
+                store.checkpoint();
+                store.compactIfNeeded(8L * 1024 * 1024);
+                host.runOnUiThread(() -> {
+                    ModouUi.toast(host, "正文缓存已清空");
+                    refreshCache();
+                    refreshStorage();
+                });
+            }, "modou-clear-cache").start();
         });
     }
 

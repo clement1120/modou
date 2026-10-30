@@ -12,8 +12,12 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * ModouStore — 共享存储层：SQLite 作为唯一真相源（原生与 WebView 共用同一份数据）。
@@ -925,6 +929,215 @@ public class ModouStore extends SQLiteOpenHelper {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    /* ---------- 存储体检 / 回收 ---------- */
+
+    /** 当前数据库全部页占用的字节（不等于 live bytes，空闲页也算） */
+    private static long pragmaLong(SQLiteDatabase db, String sql) {
+        Cursor c = null;
+        try {
+            c = db.rawQuery(sql, null);
+            if (c.moveToFirst()) return c.getLong(0);
+        } catch (Exception ignore) {
+            /* PRAGMA 不支持就当 0 */
+        } finally {
+            if (c != null) try { c.close(); } catch (Exception ignore) { }
+        }
+        return 0;
+    }
+
+    /** SQLite freelist 的空闲页字节数：删书/清缓存后不 VACUUM 就一直占着 */
+    public synchronized long dbFreeBytes() {
+        try {
+            SQLiteDatabase db = getReadableDatabase();
+            return pragmaLong(db, "PRAGMA freelist_count") * pragmaLong(db, "PRAGMA page_size");
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /** 当前库的页总数（含 freelist），用于判断真空比 */
+    public synchronized long dbPageBytes() {
+        try {
+            SQLiteDatabase db = getReadableDatabase();
+            return pragmaLong(db, "PRAGMA page_count") * pragmaLong(db, "PRAGMA page_size");
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /** 把 WAL 里的已提交页并回主库，并尽量截断 WAL 文件 */
+    public synchronized void checkpoint() {
+        Cursor c = null;
+        try {
+            SQLiteDatabase db = getWritableDatabase();
+            c = db.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null);
+        } catch (Exception ignore) {
+            /* 不支持 WAL / 有读者占用：退化为下次再说 */
+        } finally {
+            if (c != null) try { c.close(); } catch (Exception ignore) { }
+        }
+    }
+
+    /**
+     * 回收空页：只在「确实有大量 freelist 且磁盘余量足够」时做。
+     *
+     * VACUUM 会复制一份完整库，至少需要 1 倍库大小的临时空间；空间不够时宁可
+     * 不整理，也不能把用户仅剩的空间撑爆。返回是否真的执行了。
+     */
+    public synchronized boolean compactIfNeeded(long minFreeBytes) {
+        try {
+            SQLiteDatabase db = getWritableDatabase();
+            checkpoint();
+            long free = dbFreeBytes();
+            if (free < Math.max(0, minFreeBytes)) return false;
+            String path = db.getPath();
+            long dbSize = new File(path).length();
+            File dir = new File(path).getParentFile();
+            android.os.StatFs stat = new android.os.StatFs(dir.getAbsolutePath());
+            if (stat.getAvailableBytes() < dbSize * 2 + (32L << 20)) return false;
+            db.execSQL("VACUUM");
+            checkpoint();
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 全部书 id；只读主键，不碰 json。 */
+    public synchronized Set<String> bookIdSet() {
+        Set<String> out = new HashSet<>();
+        Cursor c = null;
+        try {
+            c = getReadableDatabase().rawQuery("SELECT id FROM books", null);
+            while (c.moveToNext()) {
+                String id = c.getString(0);
+                if (id != null) out.add(id);
+            }
+        } catch (Exception ignore) {
+            /* 空库 */
+        } finally {
+            if (c != null) try { c.close(); } catch (Exception ignore) { }
+        }
+        return out;
+    }
+
+    /**
+     * chapters 里出现过的 bookId（主键最后一段是章号，前面的全是 bookId）。
+     * 只读 id 列，千章一本书也只搬几 KB。
+     */
+    public synchronized Set<String> chapterBookIdSet() {
+        Set<String> out = new HashSet<>();
+        Cursor c = null;
+        try {
+            c = getReadableDatabase().rawQuery("SELECT id FROM chapters", null);
+            while (c.moveToNext()) {
+                String id = c.getString(0);
+                if (id == null) continue;
+                int cut = id.lastIndexOf("||");
+                if (cut > 0) out.add(id.substring(0, cut));
+            }
+        } catch (Exception ignore) {
+            /* 空表 */
+        } finally {
+            if (c != null) try { c.close(); } catch (Exception ignore) { }
+        }
+        return out;
+    }
+
+    /**
+     * 删掉「书已经不在书架」的孤儿正文。
+     *
+     * removeBook 默认保留缓存是为了让用户反悔时还能读；但如果用户再也不加回来，
+     * 这部分正文会永远占着库。这里只删「最后缓存时间早于 cutoff」的孤儿，
+     * 给刚移出书架的书留一个后悔窗口。
+     */
+    public synchronized int deleteOrphanChapters(long cutoffMs) {
+        Set<String> books = bookIdSet();
+        Map<String, Long> lastAt = new HashMap<>();
+        Cursor c = null;
+        try {
+            c = getReadableDatabase().rawQuery("SELECT id, cachedAt FROM chapters", null);
+            while (c.moveToNext()) {
+                String id = c.getString(0);
+                if (id == null) continue;
+                int cut = id.lastIndexOf("||");
+                if (cut <= 0) continue;
+                String bid = id.substring(0, cut);
+                if (books.contains(bid)) continue;
+                long at = c.isNull(1) ? 0 : c.getLong(1);
+                Long old = lastAt.get(bid);
+                if (old == null || at > old) lastAt.put(bid, at);
+            }
+        } catch (Exception ignore) {
+            return 0;
+        } finally {
+            if (c != null) try { c.close(); } catch (Exception ignore) { }
+        }
+        int n = 0;
+        for (Map.Entry<String, Long> e : lastAt.entrySet()) {
+            if (e.getValue() > 0 && e.getValue() >= cutoffMs) continue;
+            n += delChaptersOf(e.getKey());
+        }
+        return n;
+    }
+
+    /**
+     * 在线书章节缓存上限（LRU 近似：按 cachedAt 从旧到新删）。
+     *
+     * 本地导入书的正文是「书本身」，绝不能按缓存淘汰；只限制非 local:// 的在线缓存。
+     * 这是 Legado ACache 的同款思路，只是数据在 SQLite 里，不需要把正文搬进内存。
+     */
+    public synchronized long trimOnlineChapterCache(long maxBytes) {
+        if (maxBytes <= 0) return 0;
+        long before = 0;
+        Cursor c = null;
+        try {
+            c = getReadableDatabase().rawQuery(
+                    "SELECT SUM(LENGTH(CAST(content AS BLOB))) FROM chapters WHERE id NOT LIKE 'local://%'", null);
+            if (c.moveToFirst() && !c.isNull(0)) before = c.getLong(0);
+        } catch (Exception ignore) {
+            return 0;
+        } finally {
+            if (c != null) try { c.close(); } catch (Exception ignore) { }
+        }
+        if (before <= maxBytes) return 0;
+        long need = before - maxBytes;
+        long freed = 0;
+        while (freed < need) {
+            List<String> ids = new ArrayList<>();
+            long batch = 0;
+            Cursor d = null;
+            try {
+                d = getReadableDatabase().rawQuery(
+                        "SELECT id, LENGTH(CAST(content AS BLOB)) FROM chapters "
+                                + "WHERE id NOT LIKE 'local://%' ORDER BY cachedAt ASC LIMIT 200", null);
+                while (d.moveToNext() && batch < need - freed) {
+                    String id = d.getString(0);
+                    long len = d.isNull(1) ? 0 : d.getLong(1);
+                    if (id != null) {
+                        ids.add(id);
+                        batch += len;
+                    }
+                }
+            } catch (Exception ignore) {
+                break;
+            } finally {
+                if (d != null) try { d.close(); } catch (Exception ignore) { }
+            }
+            if (ids.isEmpty()) break;
+            SQLiteDatabase db = getWritableDatabase();
+            db.beginTransactionNonExclusive();
+            try {
+                for (String id : ids) db.delete("chapters", "id=?", new String[]{id});
+                db.setTransactionSuccessful();
+                freed += batch;
+            } finally {
+                db.endTransaction();
+            }
+        }
+        return freed;
     }
 
     /* ---------- 原生阅读页专用（免 RPC 进 JS） ---------- */

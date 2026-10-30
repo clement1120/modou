@@ -113,6 +113,10 @@ export class BookSource {
     // Legado 书源 URL 偶见 "##" 后缀（旧语法残留），会污染所有相对地址拼接，先清掉
     if (this.bookSourceUrl) this.bookSourceUrl = String(this.bookSourceUrl).replace(/#+.*$/, '').trim();
     this.enabled = def.enabled !== false;
+    // 单次请求策略（批量体检会临时覆盖成「短超时 + 不重试」）
+    this.reqTimeout = 15000;
+    this.reqRetries = 1;
+    this.cancelSignal = null;
   }
 
   static fromJson(o) {
@@ -283,9 +287,31 @@ export class BookSource {
     };
   }
 
+  /**
+   * 批量体检用：把整源请求压到固定预算内。
+   * timeout 是单请求上限；retries=0 保证一个死源最多等一个窗口。
+   * signal 用于「停止体检」立即断掉在途请求。
+   */
+  setRequestPolicy(policy = {}) {
+    this.reqTimeout = Number(policy.timeout) > 0 ? Number(policy.timeout) : 15000;
+    this.reqRetries = Number.isFinite(Number(policy.retries)) ? Math.max(0, Number(policy.retries)) : 1;
+    this.cancelSignal = policy.signal || null;
+  }
+
+  clearRequestPolicy() {
+    this.reqTimeout = 15000;
+    this.reqRetries = 1;
+    this.cancelSignal = null;
+  }
+
   async fetchText(template, vars) {
     const { url, method, body, headers, charset } = await this.buildRequest(template, vars);
-    const r = await fetchViaProxy(url, { method, headers, body, charset });
+    const r = await fetchViaProxy(url, {
+      method, headers, body, charset,
+      timeout: this.reqTimeout,
+      retries: this.reqRetries,
+      signal: this.cancelSignal || undefined,
+    });
     r.method = method;
     r.reqUrl = url;
     return r;
