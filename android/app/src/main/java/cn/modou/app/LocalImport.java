@@ -309,6 +309,9 @@ final class LocalImport {
             // 文件大小：原文件真实字节数（不再另存副本，原文件留在用户自己的文件夹里）
             rec.put("bytes", bytes);
             rec.put("localPath", BookFiles.placeOf(c));
+            // 原文件地址（SAF 文档 Uri）：阅读页「编辑本章」保存后要写回这本书，
+            // 没有它就只能改书库、够不到手机上的 .txt 原文件
+            rec.put("fileUri", String.valueOf(uri));
             store.put("books", rec.toString());
 
             r.ok = true;

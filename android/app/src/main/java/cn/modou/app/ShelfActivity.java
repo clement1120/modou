@@ -1680,7 +1680,7 @@ public class ShelfActivity extends Activity {
 
         TextView search = ModouUi.tv(this, "在线搜封面", 14, u.accent);
         search.setPadding(0, ModouUi.dp(this, 10), 0, ModouUi.dp(this, 6));
-        search.setOnClickListener((x) -> pickCover(b.optString("name", ""), (url) -> {
+        search.setOnClickListener((x) -> pickCover(b.optString("name", ""), search, (url) -> {
             cover.setText(url);
             CoverLoader.load(iv, url, b.optString("name", ""));
         }));
@@ -1759,10 +1759,19 @@ public class ShelfActivity extends Activity {
         });
     }
 
-    private void pickCover(String name, CoverPick cb) {
-        BookActivity.searchCovers(this, name, urls -> {
+    private void pickCover(String name, TextView btn, CoverPick cb) {
+        BookActivity.searchCovers(this, name, () -> {
+            if (btn != null) {
+                btn.setText("搜索封面中…");
+                btn.setEnabled(false);
+            }
+        }, urls -> {
+            if (btn != null) {
+                btn.setText("在线搜封面");
+                btn.setEnabled(true);
+            }
             if (urls.isEmpty()) {
-                ModouUi.toast(ShelfActivity.this, "没搜到可用封面");
+                ModouUi.toast(ShelfActivity.this, "没搜到可用封面，可手动填封面 URL");
                 return;
             }
             showCoverCandidates(urls, cb);

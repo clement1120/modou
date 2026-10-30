@@ -1,5 +1,8 @@
 package cn.modou.app;
 
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -12,8 +15,10 @@ import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.ColorFilter;
@@ -601,6 +606,10 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         buildDock();
 
         setContentView(root);
+
+        // 整条书籍记录（含几千章目录）第一次解析要几百毫秒：趁进阅读页的空档
+        // 在后台预载，别等用户点「更多 / 编辑」时才在主线程上卡一下
+        io.execute(this::bookObj);
     }
 
     private LinearLayout buildSelBar() {
@@ -3539,27 +3548,38 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
      * 阅读器读的也是书库——改书库即永久生效；手机上的 .txt 原文件不动
      * （导入时没有保留可回写的文件句柄，硬写有损坏原文件的风险）。
      */
+    /**
+     * 编辑本章（本地 TXT 书）。
+     * 取正文、切纯文本全部在后台线程做（一章几十 KB 时 Paras.blocks 也要几十毫秒，
+     * 以前在打开弹窗的主线程上跑，图多的章节会卡一下），弹窗本身回主线程再建。
+     */
     private void editChapter() {
-        String html = ModouStore.get(this).chapterContent(bookId, index);
-        String name = chapterNameOf(index);
-        StringBuilder before = new StringBuilder();
-        if (html != null && !html.trim().isEmpty()) {
-            for (Paras.Block b : Paras.blocks(html, name)) {
-                if (b.isImage()) continue;
-                if (before.length() > 0) before.append('\n');
-                before.append(b.value);
+        final String name = chapterNameOf(index);
+        io.execute(() -> {
+            String html = ModouStore.get(this).chapterContent(bookId, index);
+            final StringBuilder before = new StringBuilder();
+            if (html != null && !html.trim().isEmpty()) {
+                for (Paras.Block b : Paras.blocks(html, name)) {
+                    if (b.isImage()) continue;
+                    if (before.length() > 0) before.append('\n');
+                    before.append(b.value);
+                }
             }
-        }
-        if (before.length() == 0) {
-            toast("本章没有可编辑的文本");
-            return;
-        }
+            if (before.length() == 0) {
+                runOnUiThread(() -> toast("本章没有可编辑的文本"));
+                return;
+            }
+            runOnUiThread(() -> showEditDialog(name, before.toString()));
+        });
+    }
+
+    private void showEditDialog(String name, String before) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         int p = ModouUi.dp(this, 14);
         box.setPadding(p, ModouUi.dp(this, 8), p, 0);
         EditText ed = new EditText(this);
-        ed.setText(before.toString());
+        ed.setText(before);
         ed.setTextSize(14);
         ed.setTextColor(theme.text);
         ed.setBackgroundColor(0x00000000);
@@ -3568,7 +3588,7 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 (int) (getResources().getDisplayMetrics().heightPixels * 0.42f)));
         TextView note = ModouUi.tv(this,
-                "每行一段，保存后从本章开头重新显示。修改写进书库、阅读立即生效，手机上的原文件不会改动。",
+                "每行一段，保存后从本章开头重新显示。修改写进书库（阅读立即生效），并尝试同步写回手机上的原 .txt 文件。",
                 11.5f, theme.sub);
         note.setPadding(0, ModouUi.dp(this, 6), 0, 0);
         box.addView(note);
@@ -3595,12 +3615,104 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
             ModouStore.get(this).cacheChapter(bookId, index, h.toString());
             d.dismiss();
             requestChapter(index, 0); // 分段变了，旧偏移不可靠，回本章开头
-            toast("已保存，本章已按修改重新显示");
+            // 写回原文件放后台：整本重建 + 网络/SAF 写可能慢，不挡阅读
+            io.execute(() -> {
+                String fb = writeBackToFile();
+                runOnUiThread(() -> toast(fb));
+            });
         }));
     }
 
     private static String escapeHtml(String s) {
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    /**
+     * 保存章节修改后写回原文件（仅本地 TXT）。
+     *
+     * 从书库逐章重建整本文本：章名独立成行（与 TxtBook 的分章规则同构，重新导入
+     * 仍能分出同一套章节），章内正文 = Paras.blocks 的纯文本，按原编码写回 SAF 文档。
+     * 找不到可写的原文件时只改书库、返回说明文字（EPUB 不参与，见 openMoreSheet 的守卫）。
+     */
+    private String writeBackToFile() {
+        JSONObject b = bookObj();
+        if (b == null) return "已保存（书库），原文件写回失败：书籍记录缺失";
+        if (!"TXT".equalsIgnoreCase(b.optString("kind", ""))) return "已保存到书库";
+        String fileUri = b.optString("fileUri", "");
+        if (fileUri.isEmpty()) {
+            fileUri = resolveFileUri(b);
+            if (fileUri.isEmpty()) return "已保存到书库（找不到可写回的原文件，换「重新导入」覆盖更新）";
+            try {
+                b.put("fileUri", fileUri);
+                ModouStore.get(this).put("books", b.toString());
+                if (bookCache != null) bookCache = b;
+            } catch (Exception ignore) {
+                /* 写回地址记不上也不影响本次写回 */
+            }
+        }
+        StringBuilder text = new StringBuilder();
+        for (int i = 0; i < total; i++) {
+            String nm = chapterNameOf(i);
+            String html = ModouStore.get(this).chapterContent(bookId, i);
+            if (text.length() > 0) text.append("\n\n");
+            if (nm != null && !nm.trim().isEmpty()) {
+                text.append(nm.trim()).append("\n").append("\n");
+            }
+            if (html != null && !html.isEmpty()) {
+                List<Paras.Block> blocks = Paras.blocks(html, nm);
+                for (Paras.Block bl : blocks) {
+                    if (bl.isImage()) continue;
+                    if (text.length() > 0 && text.charAt(text.length() - 1) != '\n') text.append('\n');
+                    text.append(bl.value);
+                }
+            }
+        }
+        if (text.length() == 0) return "已保存到书库（重建文本为空，未写回原文件）";
+        try {
+            Uri u = Uri.parse(fileUri);
+            ContentResolver cr = getContentResolver();
+            Charset cs = Charset.forName("UTF-8");
+            try (InputStream in = cr.openInputStream(u)) {
+                if (in != null) {
+                    byte[] head = new byte[1 << 16];
+                    int n = 0;
+                    while (n < head.length) {
+                        int r = in.read(head, n, head.length - n);
+                        if (r < 0) break;
+                        n += r;
+                    }
+                    if (n > 0) cs = TxtBook.detectCharset(java.util.Arrays.copyOf(head, n));
+                }
+            }
+            try (OutputStream os = cr.openOutputStream(u, "wt")) {
+                if (os == null) return "已保存到书库（原文件不可写：没有写权限，可重新选文件夹导入）";
+                os.write(text.toString().getBytes(cs));
+            }
+            return "已保存，并已写回手机上的原文件";
+        } catch (Exception e) {
+            String m = String.valueOf(e.getMessage());
+            if (m == null || m.isEmpty()) m = e.getClass().getSimpleName();
+            return "已保存到书库（写回原文件失败：" + m + "）";
+        }
+    }
+
+    /** 老版本导入的书没有 fileUri：按「文件名 + 字节数」在系统媒体库里找回对应文档 */
+    private String resolveFileUri(JSONObject b) {
+        try {
+            String bookUrl = b.optString("bookUrl", "");
+            String file = bookUrl.startsWith(LocalImport.LOCAL) && bookUrl.contains("#")
+                    ? bookUrl.substring(LocalImport.LOCAL.length(), bookUrl.lastIndexOf('#')) : "";
+            long bytes = b.optLong("bytes", -1);
+            if (file.isEmpty() || bytes <= 0) return "";
+            for (LocalScan.Item it : LocalScan.scan(this)) {
+                if (it != null && file.equals(it.name) && bytes == it.size && it.uri != null) {
+                    return it.uri.toString();
+                }
+            }
+        } catch (Exception ignore) {
+            /* 找不到就返回空串，调用方走书库-only 分支 */
+        }
+        return "";
     }
 
     private void addToShelf() {
