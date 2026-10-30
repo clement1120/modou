@@ -12,6 +12,9 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 import android.widget.TextView;
 
 import java.util.ArrayList;
@@ -36,7 +39,9 @@ public class ImportActivity extends Activity {
     private LinearLayout body;
     private TextView folderValue;
     private TextView progress;
+    private LinearLayout importRows;
     private boolean busy;
+    private final ImportCenter.Listener centerListener = this::onCenterProgress;
 
     static void launch(Activity from) {
         from.startActivity(new Intent(from, ImportActivity.class));
@@ -70,6 +75,16 @@ public class ImportActivity extends Activity {
         setContentView(root);
 
         paint();
+        // 全局导入进度：这个页面只是「看板」之一，书架横幅看同一份状态
+        ImportCenter.get().addListener(centerListener);
+        ImportCenter.get().noteResume(this);
+        onCenterProgress();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        ImportCenter.get().removeListener(centerListener);
     }
 
     private int statusBarPx() {
@@ -82,6 +97,85 @@ public class ImportActivity extends Activity {
         super.onResume();
         if (!busy && ModouUi.syncTheme(this)) return;
         if (folderValue != null) folderValue.setText(currentPlace());
+        // 从其他页面回来：进度可能已经在后台走了好几本，直接读快照
+        ImportCenter.get().noteResume(this);
+        onCenterProgress();
+    }
+
+    /** 导入中心有任何变化（后台线程也在跑）都重绘看板 */
+    private void onCenterProgress() {
+        if (progress == null || importRows == null) return;
+        try {
+            JSONObject snap = ImportCenter.get().snapshot();
+            renderSnapshot(snap);
+        } catch (Exception ignore) {
+            /* 渲染失败不影响导入 */
+        }
+    }
+
+    /** 把中心快照画成：总进度行 + 每本书一行状态 */
+    private void renderSnapshot(JSONObject snap) {
+        boolean running = snap.optBoolean("running", false);
+        boolean interrupted = snap.optBoolean("interrupted", false);
+        int total = snap.optInt("total", 0);
+        int done = snap.optInt("done", 0);
+        int ok = snap.optInt("ok", 0);
+        int fail = snap.optInt("fail", 0);
+        String stage = snap.optString("stage", "");
+        String current = snap.optString("current", "");
+
+        progress.setText(TextUtils.isEmpty(stage) ? "" : stage);
+        progress.setVisibility(TextUtils.isEmpty(progress.getText()) ? View.GONE : View.VISIBLE);
+
+        importRows.removeAllViews();
+        JSONArray arr = snap.optJSONArray("files");
+        if (arr == null) return;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject fo = arr.optJSONObject(i);
+            if (fo == null) continue;
+            String name = fo.optString("name", "文件 " + (i + 1));
+            String status = fo.optString("status", "pending");
+            String msg = fo.optString("msg", "");
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setPadding(0, ModouUi.dp(this, 4), 0, ModouUi.dp(this, 4));
+            row.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            String chip = "待导入";
+            int chipColor = ui.sub;
+            if ("importing".equals(status)) {
+                chip = "导入中";
+                chipColor = ui.accent;
+            } else if ("ok".equals(status)) {
+                chip = "完成";
+                chipColor = ui.accent;
+            } else if ("fail".equals(status)) {
+                chip = "失败";
+                chipColor = 0xFFB25B4B;
+            }
+            TextView c = ModouUi.tv(this, chip, 11, chipColor);
+            c.setPadding(ModouUi.dp(this, 6), ModouUi.dp(this, 2), ModouUi.dp(this, 6), ModouUi.dp(this, 2));
+            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+            bg.setCornerRadius(ModouUi.dp(this, 6));
+            bg.setColor(ModouUi.alpha(chipColor, 0x22));
+            c.setBackground(bg);
+            row.addView(c);
+            TextView n = ModouUi.tv(this, name + ("fail".equals(status) && !msg.isEmpty() ? "（" + msg + "）" : ""), 13, ui.text);
+            n.setPadding(ModouUi.dp(this, 8), 0, 0, 0);
+            n.setMaxLines(2);
+            row.addView(n);
+            importRows.addView(row);
+        }
+        if (running && total > 0) {
+            TextView bar = ModouUi.tv(this,
+                    done + "/" + total + " · " + (interrupted ? "上次中断" : "正在导入") + "《" + current + "》",
+                    13, ui.accent);
+            bar.setPadding(0, ModouUi.dp(this, 8), 0, ModouUi.dp(this, 2));
+            importRows.addView(bar, 0);
+        } else if (done >= total && total > 0) {
+            TextView bar = ModouUi.tv(this, "本批完成：" + ok + " 成功" + (fail > 0 ? "，" + fail + " 失败" : ""), 13, ui.accent);
+            bar.setPadding(0, ModouUi.dp(this, 8), 0, ModouUi.dp(this, 2));
+            importRows.addView(bar, 0);
+        }
     }
 
     /* ---------------- 页面 ---------------- */
@@ -115,6 +209,10 @@ public class ImportActivity extends Activity {
         progress.setPadding(ModouUi.dp(this, 2), ModouUi.dp(this, 14), 0, 0);
         progress.setVisibility(TextUtils.isEmpty(progress.getText()) ? View.GONE : View.VISIBLE);
         body.addView(progress);
+
+        importRows = new LinearLayout(this);
+        importRows.setOrientation(LinearLayout.VERTICAL);
+        body.addView(importRows);
     }
 
     private View buildFolderCard() {
@@ -248,42 +346,23 @@ public class ImportActivity extends Activity {
         }
     }
 
-    /** 兜底入口也走同一条串行队列：一次选十本也只是排队导，不会同时开十个解析 */
+    /** 批量导入统一走 ImportCenter：进度持久化 + 文件级状态，切页回来不丢 */
     private void importFiles(List<Uri> uris) {
-        busy = true;
-        say("正在导入 " + uris.size() + " 个文件…");
-        int[] done = {0};
-        int[] ok = {0};
-        for (Uri u : uris) {
-            String name = nameOf(u);
-            long size = sizeOf(u);
-            LocalImport.enqueue(this, u, name, size, new LocalImport.Callback() {
-                @Override
-                public void onStage(String text) {
-                    if (progress != null) {
-                        progress.setVisibility(View.VISIBLE);
-                        progress.setText(text);
-                    }
-                }
-
-                @Override
-                public void onDone(LocalImport.Res r) {
-                    done[0]++;
-                    if (r.ok) ok[0]++;
-                    if (done[0] >= uris.size()) {
-                        busy = false;
-                        if (progress != null) {
-                            progress.setVisibility(View.VISIBLE);
-                            progress.setText("导入完成：" + ok[0] + " 本成功"
-                                    + (uris.size() - ok[0] > 0
-                                    ? "，" + (uris.size() - ok[0]) + " 本失败（" + r.msg + "）" : ""));
-                        }
-                        ModouUi.toast(ImportActivity.this,
-                                "导入完成：" + ok[0] + "/" + uris.size());
-                    }
-                }
-            });
+        if (ImportCenter.get().isRunning()) {
+            ModouUi.toast(this, "正在导入，先等当前批次完成");
+            return;
         }
+        busy = true;
+        List<String> names = new java.util.ArrayList<>();
+        List<Long> sizes = new java.util.ArrayList<>();
+        for (Uri u : uris) {
+            names.add(nameOf(u));
+            sizes.add(sizeOf(u));
+        }
+        ImportCenter.get().start(this, uris, names, sizes);
+        onCenterProgress();
+        busy = false;
+        ModouUi.toast(this, "开始导入 " + uris.size() + " 个文件，进度已保存，切到其他页面也能看到");
     }
 
     private void say(String s) {

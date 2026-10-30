@@ -57,6 +57,20 @@ public class ShelfActivity extends Activity {
         from.startActivity(new Intent(from, ShelfActivity.class));
     }
 
+    /* 全局导入进度横幅：导入中心跑的时候，书架顶部一直能看到进度（切页回来不丢） */
+    private View importBanner;
+    private TextView importBannerText;
+    private final android.os.Handler importTickH = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable importTick = new Runnable() {
+        @Override
+        public void run() {
+            refreshImportBanner();
+            if (importBanner != null && importBanner.getVisibility() == View.VISIBLE) {
+                importTickH.postDelayed(this, 700);
+            }
+        }
+    };
+
     private ModouUi ui;
     private ModouStore store;
 
@@ -165,6 +179,27 @@ public class ShelfActivity extends Activity {
         root.addView(pager, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         root.addView(buildBottomNav(), new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // 导入横幅放最顶上：导入中心有活（导入中/上次中断）就显示，点击回到导入页
+        LinearLayout banner = new LinearLayout(this);
+        banner.setOrientation(LinearLayout.HORIZONTAL);
+        banner.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        banner.setPadding(ModouUi.dp(this, 12), ModouUi.dp(this, 8), ModouUi.dp(this, 12), ModouUi.dp(this, 8));
+        android.graphics.drawable.GradientDrawable bannerBg = new android.graphics.drawable.GradientDrawable();
+        bannerBg.setCornerRadius(ModouUi.dp(this, 10));
+        bannerBg.setColor(ModouUi.alpha(ui.accent, 0x16));
+        banner.setBackground(bannerBg);
+        android.graphics.drawable.RippleDrawable bannerRip = new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(ModouUi.alpha(ui.accent, 0x30)),
+                null, bannerBg);
+        banner.setBackground(bannerRip);
+        importBannerText = ModouUi.tv(this, "", 13, ui.accent);
+        banner.addView(importBannerText);
+        banner.setOnClickListener((v) -> ImportCenter.open(ShelfActivity.this));
+        importBanner = banner;
+        importBanner.setVisibility(View.GONE);
+        root.addView(importBanner, 0, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // 外部（设置面板等）要求直接落在某个 tag
@@ -353,6 +388,8 @@ public class ShelfActivity extends Activity {
             backfillLite();
         }
         resumed = true;
+        refreshImportBanner();
+        importTickH.postDelayed(importTick, 700);
     }
 
     @Override
@@ -360,6 +397,31 @@ public class ShelfActivity extends Activity {
         super.onPause();
         // 盖住本页就收手：阅读页正在取章节，书架不该再占着数据库锁和主线程
         paused = true;
+        importTickH.removeCallbacks(importTick);
+    }
+
+    /** 导入横幅：只读 ImportCenter 快照，导入中/上次中断才显示 */
+    private void refreshImportBanner() {
+        if (importBanner == null || importBannerText == null) return;
+        try {
+            JSONObject snap = ImportCenter.get().snapshot();
+            boolean running = snap.optBoolean("running", false);
+            boolean interrupted = snap.optBoolean("interrupted", false);
+            int total = snap.optInt("total", 0);
+            int done = snap.optInt("done", 0);
+            String stage = snap.optString("stage", "");
+            if (running && total > 0) {
+                importBannerText.setText("正在导入 " + done + "/" + total + " · " + stage);
+                importBanner.setVisibility(View.VISIBLE);
+            } else if (interrupted && total > 0 && done < total) {
+                importBannerText.setText("上次导入中断 " + done + "/" + total + " · 点此重新导入");
+                importBanner.setVisibility(View.VISIBLE);
+            } else {
+                importBanner.setVisibility(View.GONE);
+            }
+        } catch (Exception ignore) {
+            /* 横幅刷新失败不影响书架 */
+        }
     }
 
     /**
