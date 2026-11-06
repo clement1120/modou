@@ -11,6 +11,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -30,6 +31,8 @@ import java.util.List;
 final class RulesPanel {
 
     private static final String KEY = "replaceRules";
+    /** 内置规则只播种一次：用户真删掉了就是不要，不该每次进页面又冒出来 */
+    private static final String SEEDED_KEY = "replaceRulesSeeded";
 
     private final Activity host;
     private ModouUi ui;
@@ -41,17 +44,18 @@ final class RulesPanel {
         this.host = host;
     }
 
-    /** @param embedded 嵌入首页时为 true：不留状态栏偏移、不画「‹ 返回」 */
+    /** @param embedded 嵌入首页时为 true：不留状态栏偏移、不画左上返回圆钮 */
     View view(boolean embedded) {
         ui = ModouUi.of(host);
 
         ScrollView sv = new ScrollView(host);
         sv.setVerticalScrollBarEnabled(false);
-        sv.setBackgroundColor(ui.bg);
+        // 不铺纯色：嵌入首页时要透出底衬渐变（纯色会在页面底部露出一条色差）
         body = new LinearLayout(host);
         body.setOrientation(LinearLayout.VERTICAL);
-        int p = ModouUi.dp(host, 14);
-        body.setPadding(p, embedded ? ModouUi.dp(host, 6) : statusBarPad(), p, p);
+        int p = ModouUi.topInset(host);
+        // 底部浮岛压在这些页上：内容底边留出它的高度，最后一项才能滚上来
+        body.setPadding(p, embedded ? ModouUi.dp(host, 6) : statusBarPad(), p, ModouUi.dockFootPx(host));
         sv.addView(body);
 
         reload();
@@ -68,10 +72,29 @@ final class RulesPanel {
         // settings 里存的是 JSON 值本身（数组会被存成 JSON 文本）
         rules.clear();
         rules.addAll(Rules.parse(raw));
+        seedBuiltins();
         paint();
     }
 
-    private void save() {
+    /**
+     * 首次进入（或从老版本升级上来）时，把内置规则并进清单：
+     * 内置的排最前面，用户原有的自定义规则一条不动。
+     */
+    private void seedBuiltins() {
+        if ("1".equals(ModouStore.get(host).settingRaw(SEEDED_KEY))) return;
+        List<Rules.Rule> add = new ArrayList<>();
+        for (Rules.Rule b : Rules.builtins()) {
+            boolean dup = false;
+            for (Rules.Rule r : rules) if (b.id.equals(r.id)) { dup = true; break; }
+            if (!dup) add.add(b);
+        }
+        rules.addAll(0, add);
+        persist();
+        ModouStore.get(host).putSetting(SEEDED_KEY, "1");
+    }
+
+    /** 只写盘，不重画（播种与批量修改时用，避免中间态闪一下） */
+    private void persist() {
         JSONArray a = new JSONArray();
         try {
             for (Rules.Rule r : rules) {
@@ -88,6 +111,10 @@ final class RulesPanel {
             /* 不可能 */
         }
         ModouStore.get(host).putSetting(KEY, a.toString());
+    }
+
+    private void save() {
+        persist();
         paint();
     }
 
@@ -99,25 +126,32 @@ final class RulesPanel {
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
         if (!embedded()) {
-            TextView back = ModouUi.tv(host, "‹ 返回", 14, ui.accent);
-            back.setPadding(0, ModouUi.dp(host, 4), ModouUi.dp(host, 10), ModouUi.dp(host, 8));
-            back.setOnClickListener((v) -> host.finish());
-            bar.addView(back);
+            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                    ModouUi.dp(host, 40), ModouUi.dp(host, 40));
+            blp.rightMargin = ModouUi.dp(host, 8);
+            bar.addView(ModouUi.backBtn(host, () -> host.finish()), blp);
         }
-        TextView t = ModouUi.tv(host, "正文净化", 26, ui.text);
-        t.setTypeface(Typeface.SERIF, Typeface.BOLD);
+        // 0.9.168：M3 / iOS 走统一 A8 字阶（32sp Medium / 34sp Bold），不再是墨读
+        // 那行 26sp 衬线老标题；墨读 itemBadgeStyle=0，逐像素保持衬线原样。
+        TextView t = ui.spec.itemBadgeStyle != 0
+                ? ModouUi.pageTitle(host, "正文净化")
+                : ModouUi.tv(host, "正文净化", 26, ui.text);
+        if (ui.spec.itemBadgeStyle == 0) t.setTypeface(Typeface.SERIF, Typeface.BOLD);
         bar.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView add = ModouUi.tv(host, "＋ 添加", 14, ui.accent);
-        add.setPadding(ModouUi.dp(host, 10), ModouUi.dp(host, 6), ModouUi.dp(host, 2), ModouUi.dp(host, 6));
-        add.setOnClickListener((v) -> edit(-1, null));
+        // 独立圆形「+」：和书架页右上角那两颗钮同样的 40dp 圆底 + 细线加号。
+        // 原来是「细线图标 + 文字『添加』」的淡胶囊，和书架页的圆钮又不是一套了。
+        ImageView add = ModouUi.topBtn(host, ModouGlyph.ADD, 40, (v) -> edit(-1, null));
         bar.addView(add);
         body.addView(bar);
 
         status = ModouUi.tv(host, "", 12, ui.sub);
         status.setPadding(ModouUi.dp(host, 2), ModouUi.dp(host, 6), ModouUi.dp(host, 2), ModouUi.dp(host, 8));
+        int bi = 0;
+        for (Rules.Rule r : rules) if (Rules.isBuiltin(r)) bi++;
         status.setText(rules.isEmpty()
                 ? "还没有规则。添加后可去掉正文里的广告、错字、固定前缀。"
-                : "共 " + rules.size() + " 条；点条目修改，开关停用/启用。");
+                : "内置 " + bi + " 条（勾选即生效），自定义 " + (rules.size() - bi)
+                        + " 条。点自定义条目修改。");
         body.addView(status);
 
         if (rules.isEmpty()) {
@@ -144,6 +178,7 @@ final class RulesPanel {
 
     private View ruleRow(final int i) {
         final Rules.Rule r = rules.get(i);
+        final boolean builtin = Rules.isBuiltin(r);
         LinearLayout top = new LinearLayout(host);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
@@ -155,26 +190,49 @@ final class RulesPanel {
             save();
         }));
 
+        // 0.9.168：动态项字母块。自定义规则名可能是正则（^、\），取首字很丑，
+        // 改用「类型词」取首字：内置 / 正则 / 替换，语义由规则本身给出；
+        // seed 用规则 id 保证同一条规则颜色稳定。墨读 create 返回 null，不加任何 View。
+        View badge = ItemBadge.create(host, ui);
+        if (badge != null) {
+            ItemBadge.bind(badge, builtin ? "内置" : (r.isRegex ? "正则" : "替换"), r.id);
+            top.addView(badge);
+        }
+
         LinearLayout mid = new LinearLayout(host);
         mid.setOrientation(LinearLayout.VERTICAL);
         mid.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView pat = ModouUi.tv(host, (r.isRegex ? "[正则] " : "") + r.pattern, 14, ui.text);
+        String title = builtin ? Rules.builtinName(r.id)
+                : (r.isRegex ? "[正则] " : "") + r.pattern;
+        TextView pat = ModouUi.tv(host, title, 14, ui.text);
         pat.setSingleLine(true);
         pat.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
         mid.addView(pat);
-        String rep = r.replacement.isEmpty() ? "（替换为空）" : "→ " + r.replacement;
-        mid.addView(ModouUi.tv(host, rep + " · " + ("title".equals(r.scope) ? "仅标题" : "正文"), 11.5f, ui.sub));
+        String rep = builtin
+                ? "内置 · " + ("title".equals(r.scope) ? "仅标题" : "正文")
+                : (r.replacement.isEmpty() ? "（替换为空）" : "→ " + r.replacement)
+                        + " · " + ("title".equals(r.scope) ? "仅标题" : "正文");
+        mid.addView(ModouUi.tv(host, rep, 11.5f, ui.sub));
         top.addView(mid);
 
-        TextView del = ModouUi.tv(host, "删除", 12.5f, ui.danger);
-        del.setPadding(ModouUi.dp(host, 9), ModouUi.dp(host, 4), 0, ModouUi.dp(host, 4));
-        del.setOnClickListener((v) -> {
-            rules.remove(i);
-            save();
-        });
-        top.addView(del);
-
-        top.setOnClickListener((v) -> edit(i, null));
+        if (builtin) {
+            // 内置规则只给开关：文字写清楚是「内置」，免得用户找不到删除键以为是坏了
+            // 分类标签只是「这是内置的」的注脚，不该用一个带色的小色块跳出来
+            TextView tag = ModouUi.tv(host, "内置", 11, ui.sub);
+            tag.setPadding(ModouUi.dp(host, 8), ModouUi.dp(host, 3),
+                    ModouUi.dp(host, 8), ModouUi.dp(host, 3));
+            tag.setBackground(ModouUi.round(ModouUi.alpha(ui.text, 0x0D), 999));
+            top.addView(tag);
+        } else {
+            TextView del = ModouUi.tv(host, "删除", 12.5f, ui.danger);
+            del.setPadding(ModouUi.dp(host, 9), ModouUi.dp(host, 4), 0, ModouUi.dp(host, 4));
+            del.setOnClickListener((v) -> {
+                rules.remove(i);
+                save();
+            });
+            top.addView(del);
+            top.setOnClickListener((v) -> edit(i, null));
+        }
         return top;
     }
 
@@ -200,7 +258,7 @@ final class RulesPanel {
                 /* 不可能 */
             }
             ClipboardManager cm = (ClipboardManager) host.getSystemService(Context.CLIPBOARD_SERVICE);
-            if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("墨读规则", a.toString()));
+            if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("轻阅规则", a.toString()));
             ModouUi.toast(host, "已复制到剪贴板");
         });
         wrap.addView(exp, btnLp());
@@ -256,7 +314,7 @@ final class RulesPanel {
             rules.add(r);
         }
 
-        final Dialog d = ModouUi.sheet(host,
+        final Dialog d = ModouUi.sheetForm(host,
                 isNew ? "添加规则" : "修改规则", box);
 
         box.addView(ModouUi.sheetButtons(host, d, "取消", "保存",
@@ -299,15 +357,16 @@ final class RulesPanel {
         return l;
     }
 
+    /**
+     * 0.9.163（台账 A6）：页面私有按钮下线，统一到全局 A6 按钮族。
+     * 传 {@link ModouUi#CAPSULE} 保留墨读一直沿用的全圆胶囊；M3 / iOS 下同一调用
+     * 自然落到各自的 Filled/Tonal 全圆按钮 + state layer 按压 + 官方字阶（labelLarge）。
+     * 一处改，全 App 的按钮都跟着改。
+     */
     private TextView button(String text, boolean primary) {
-        TextView t = ModouUi.tv(host, text, 14, primary ? 0xFFFFFFFF : ui.text);
-        t.setGravity(Gravity.CENTER);
-        t.setPadding(ModouUi.dp(host, 8), ModouUi.dp(host, 10), ModouUi.dp(host, 8), ModouUi.dp(host, 10));
-        android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
-        g.setColor(primary ? ui.accent : ui.card);
-        g.setCornerRadius(ModouUi.dp(host, 8));
-        t.setBackground(g);
-        return t;
+        return ModouUi.button(host, text,
+                primary ? DesignSpec.ButtonKind.FILLED : DesignSpec.ButtonKind.TONAL,
+                ModouUi.CAPSULE, null);
     }
 
     private LinearLayout.LayoutParams btnLp() {

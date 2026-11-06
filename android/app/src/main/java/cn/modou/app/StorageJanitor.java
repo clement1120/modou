@@ -270,7 +270,9 @@ final class StorageJanitor {
         File[] fs = dir.listFiles();
         if (fs == null) return;
         for (File f : fs) {
-            if (f.isFile() && !valid.contains(f.getName())) {
+            // .nomedia 不是封面：不跳过的话每次回收都会把「别扫我」标记删掉
+            if (f.isFile() && !f.getName().startsWith(".")
+                    && !valid.contains(f.getName())) {
                 try {
                     f.delete();
                 } catch (Exception ignore) {

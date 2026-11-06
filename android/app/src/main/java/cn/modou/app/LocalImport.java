@@ -48,6 +48,18 @@ final class LocalImport {
     /** 单本上限：再大解析出来也装不进内存 */
     static final long MAX_BYTES = 60L * 1024 * 1024;
 
+    /**
+     * 当前正在解析的书 id（同一时间只有一本，见串行闸门 SLOT）。
+     * 书架据此判断「一条 importing 占位是不是真有任务在跑」：进程被杀后重启，
+     * CURRENT_ID 是 null，遗留的 importing 占位就会被当作僵尸清掉，不会永远卡在书架上。
+     */
+    private static volatile String CURRENT_ID;
+
+    /** 这本书此刻是否正在被导入（供书架清理僵尸占位用） */
+    static boolean isImporting(String id) {
+        return id != null && id.equals(CURRENT_ID);
+    }
+
     static final class Res {
         boolean ok;
         /** 失败原因，或成功时的摘要（用于列表上的提示条） */
@@ -236,6 +248,39 @@ final class LocalImport {
                 BookFiles.clearImages(c, id); // 旧版本内联在正文里的图也一起换掉
             }
 
+            // 先落一条「导入中」占位：书架立刻能看到这本书、可点（点开提示仍在导入），
+            // 真正的解析放在后台慢慢做，不阻塞用户继续翻书架/导入下一本。
+            // 成功后被下面完整的 rec 整体覆盖（importing 自然消失）；失败一律 cleanup 删除。
+            CURRENT_ID = id;
+            long now = System.currentTimeMillis();
+            long addedAt = now;
+            if (existed != null) {
+                try {
+                    addedAt = new JSONObject(existed).optLong("addedAt", now);
+                } catch (Exception ignore) {
+                    addedAt = now;
+                }
+            }
+            JSONObject ph = new JSONObject();
+            ph.put("id", id);
+            ph.put("sourceUrl", LOCAL);
+            ph.put("sourceName", "本地导入");
+            ph.put("name", strip(name));
+            ph.put("author", "");
+            ph.put("intro", "");
+            ph.put("coverUrl", "");
+            ph.put("kind", ext.toUpperCase(Locale.ROOT));
+            ph.put("lastChapter", "");
+            ph.put("bookUrl", bookUrl);
+            ph.put("group", "默认");
+            ph.put("importing", true);
+            ph.put("addedAt", addedAt);
+            ph.put("updatedAt", now);
+            ph.put("bytes", bytes);
+            ph.put("fileUri", String.valueOf(uri));
+            store.put("books", ph.toString());
+            stage.say("已加入书架，正在解析《" + strip(name) + "》…");
+
             Writer w = new Writer(c, store, id, name, stage);
             String title, author, intro, cover = "";
             int total;
@@ -260,7 +305,7 @@ final class LocalImport {
             total = w.count();
 
             if (total == 0) {
-                store.delChaptersOf(id);
+                cleanup(c, store, id); // 连占位一起删，别在书架上留一本空书
                 r.msg = "没解析到任何章节";
                 return r;
             }
@@ -268,8 +313,7 @@ final class LocalImport {
             // 以前这种书照样报「已导入」，用户点进去就是一片「这一章没有正文」。
             int stored = w.written();
             if (stored < total) {
-                store.delChaptersOf(id);
-                BookFiles.clearImages(c, id);
+                cleanup(c, store, id); // 同上：占位与半截章节一起清掉
                 r.msg = "只写入了 " + stored + "/" + total + " 章：存储空间可能不够，删点东西再试";
                 return r;
             }
@@ -295,17 +339,8 @@ final class LocalImport {
             rec.put("bookUrl", bookUrl);
             rec.put("group", "默认");
             rec.put("chapters", chs);
-            long now = System.currentTimeMillis();
-            long added = now;
-            if (existed != null) {
-                try {
-                    added = new JSONObject(existed).optLong("addedAt", now);
-                } catch (Exception ignore) {
-                    added = now;
-                }
-            }
-            rec.put("addedAt", added);
-            rec.put("updatedAt", now);
+            rec.put("addedAt", addedAt);
+            rec.put("updatedAt", System.currentTimeMillis());
             // 文件大小：原文件真实字节数（不再另存副本，原文件留在用户自己的文件夹里）
             rec.put("bytes", bytes);
             rec.put("localPath", BookFiles.placeOf(c));
@@ -333,6 +368,7 @@ final class LocalImport {
             }
             r.msg = "导入失败：" + m;
         } finally {
+            if (id != null && id.equals(CURRENT_ID)) CURRENT_ID = null;
             if (tmp != null) {
                 //noinspection ResultOfMethodCallIgnored
                 tmp.delete();

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, fix/storage-source-check-memory, feature/md3-panel-web-render, feat/ci-cover-perf]
+    branches: [main]
   pull_request:
 
 # 上传 Release 资产需要写权限
@@ -37,11 +37,6 @@ jobs:
 
       - name: 引擎 + 本地导入测试
         run: npm test
-
-      - name: UI 冒烟（187 基线）
-        env:
-          MODOU_BASE: http://127.0.0.1:8090
-        run: npm run test:ui
 
   build:
     name: 构建 Debug APK

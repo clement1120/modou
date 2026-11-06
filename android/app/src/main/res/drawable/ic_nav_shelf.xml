@@ -3,8 +3,9 @@
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
-    <!-- 书架：书签书（Material book / menu_book 简化） -->
+    <!-- 精装书·实心：书身填充，书签用 evenOdd 挖成槽内槽 -->
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M18,2H6c-1.1,0 -2,0.9 -2,2v16c0,1.1 0.9,2 2,2h12c1.1,0 2,-0.9 2,-2V4c0,-1.1 -0.9,-2 -2,-2zM6,4h5v8l-2.5,-1.5L6,12V4z" />
+        android:fillType="evenOdd"
+        android:pathData="M6.5,4 H15 a1.5,1.5 0 0 1 1.5,1.5 V18.5 a1.5,1.5 0 0 1 -1.5,1.5 H6.5 a1.5,1.5 0 0 1 -1.5,-1.5 V5.5 a1.5,1.5 0 0 1 1.5,-1.5 Z M13,4 V14 L11.5,12.5 L10,14 V4 Z" />
 </vector>

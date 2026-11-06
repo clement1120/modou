@@ -1,0 +1,15 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 规则·线性：对称漏斗，出口圆角化。0.9.155 把上沿收到 x4.5~19.5、漏斗颈居中，
+         与其它三枚统一重心和 1.7 线宽。 -->
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M4.5,5.5 H19.5 L13.4,13 V18 a1,1 0 0 1 -1,1 H11.6 a1,1 0 0 1 -1,-1 V13 Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="1.7" />
+</vector>

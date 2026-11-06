@@ -68,7 +68,8 @@ public class ImportActivity extends Activity {
         body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
         int p = ModouUi.dp(this, 14);
-        body.setPadding(p, p + statusBarPx(), p, p);
+        int e = ModouUi.topInset(this);
+        body.setPadding(e, p + statusBarPx(), e, p);
         sv.addView(body);
         root.addView(sv, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -154,10 +155,7 @@ public class ImportActivity extends Activity {
             }
             TextView c = ModouUi.tv(this, chip, 11, chipColor);
             c.setPadding(ModouUi.dp(this, 6), ModouUi.dp(this, 2), ModouUi.dp(this, 6), ModouUi.dp(this, 2));
-            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
-            bg.setCornerRadius(ModouUi.dp(this, 6));
-            bg.setColor(ModouUi.alpha(chipColor, 0x22));
-            c.setBackground(bg);
+            c.setBackground(ModouUi.squircle(this, ModouUi.alpha(chipColor, 0x22), 6));
             row.addView(c);
             TextView n = ModouUi.tv(this, name + ("fail".equals(status) && !msg.isEmpty() ? "（" + msg + "）" : ""), 13, ui.text);
             n.setPadding(ModouUi.dp(this, 8), 0, 0, 0);
@@ -183,10 +181,10 @@ public class ImportActivity extends Activity {
     private void paint() {
         body.removeAllViews();
 
-        TextView back = ModouUi.tv(this, "‹ 返回", 14, ui.accent);
-        back.setPadding(0, ModouUi.dp(this, 2), 0, ModouUi.dp(this, 8));
-        back.setOnClickListener((v) -> finish());
-        body.addView(back);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                ModouUi.dp(this, 40), ModouUi.dp(this, 40));
+        blp.bottomMargin = ModouUi.dp(this, 8);
+        body.addView(ModouUi.backBtn(this, () -> finish()), blp);
 
         TextView title = ModouUi.tv(this, "导入本地书籍", 26, ui.text);
         title.setTypeface(Typeface.SERIF, Typeface.BOLD);
@@ -350,6 +348,10 @@ public class ImportActivity extends Activity {
             i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
             i.putExtra(Intent.EXTRA_MIME_TYPES,
                     new String[]{"text/plain", "application/epub+zip"});
+            // 写权限一并要：删原文件（deleteDocument）、编辑本章写回都靠它
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
             startActivityForResult(Intent.createChooser(i, "选择 TXT / EPUB"), REQ_PICK);
         } catch (Exception e) {
             say("打不开文件选择器：" + e.getMessage());

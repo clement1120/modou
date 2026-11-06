@@ -20,4 +20,63 @@
         <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">false</item>
     </style>
+
+    <!-- 0.9.158：设计语言 × 深浅的 Activity 窗口底色。
+         弹层仍统一用 Theme.Modou.Glass（translucent + floating 是窗口模糊的硬条件），
+         是否挂模糊、是否贴底、是否居中都由 DesignSpec 在代码里决定，不靠 XML 分支。 -->
+    <style name="Theme.Modou.Material" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/bg_material</item>
+        <item name="android:windowSplashScreenBackground">@color/bg_material</item>
+        <item name="android:statusBarColor">@color/bg_material</item>
+        <item name="android:navigationBarColor">@color/bg_material</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <style name="Theme.Modou.Material.Dark" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg_material_dark</item>
+        <item name="android:windowSplashScreenBackground">@color/bg_material_dark</item>
+        <item name="android:statusBarColor">@color/bg_material_dark</item>
+        <item name="android:navigationBarColor">@color/bg_material_dark</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+
+    <style name="Theme.Modou.Liquid" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/bg_liquid</item>
+        <item name="android:windowSplashScreenBackground">@color/bg_liquid</item>
+        <item name="android:statusBarColor">@color/bg_liquid</item>
+        <item name="android:navigationBarColor">@color/bg_liquid</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+
+    <style name="Theme.Modou.Liquid.Dark" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg_liquid_dark</item>
+        <item name="android:windowSplashScreenBackground">@color/bg_liquid_dark</item>
+        <item name="android:statusBarColor">@color/bg_liquid_dark</item>
+        <item name="android:navigationBarColor">@color/bg_liquid_dark</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+
+    <!-- 玻璃浮岛窗口：底栏 / 面板的实时跨窗口模糊容器（0.9.138）。
+         windowIsTranslucent + windowIsFloating 是 Window.setBackgroundBlurRadius 生效的
+         硬性条件，缺一个系统都不会在合成时卷积下层画面。dim 必须关掉，否则整屏被压暗，
+         模糊出来的颜色全被一层灰盖住。窗口动画置空：底栏是常驻件，不该淡入淡出。
+         0.9.158：三套语言共用这一种弹层窗口，是否挂模糊由 DesignSpec.sheetBlur 决定。 -->
+    <style name="Theme.Modou.Glass" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowIsFloating">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <!-- 0.9.152：系统菜单那种「浮起」主要来自一圈极淡投影。窗口级 elevation 让
+             WindowManager 在窗口 surface 之外画阴影，不必放宽窗口尺寸，也不破坏
+             「模糊只糊卡片」的约束（窗口尺寸仍精确等于卡片）。若个别 ROM 对
+             translucent floating 窗口不绘制，材质层的极淡内阴影会兜底。 -->
+        <item name="android:windowElevation">12dp</item>
+    </style>
 </resources>

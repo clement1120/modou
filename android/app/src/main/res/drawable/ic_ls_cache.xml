@@ -1,0 +1,9 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <!-- 章节缓存：三层堆叠 -->
+    <path android:fillColor="#00000000"
+        android:pathData="M12,3.5 L20.8,8.1 L12,12.7 L3.2,8.1 Z M3.2,12.1 L12,16.7 L20.8,12.1 M3.2,16.1 L12,20.7 L20.8,16.1"
+        android:strokeColor="#FFFFFFFF" android:strokeLineCap="round"
+        android:strokeLineJoin="round" android:strokeWidth="1.9" />
+</vector>

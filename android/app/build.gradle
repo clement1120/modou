@@ -2,24 +2,46 @@ plugins {
     id 'com.android.application'
 }
 
+// 分页算法版本：把关键算法文件 NativePageView.java 的内容哈希注入缓存键，
+// 算法改一行哈希就变 → 旧页表整体失效，避免「改了分页却忘了升版本」导致旧缓存用错分页结果。
+def paginateHash = "p3"
+try {
+    def pf = file("src/main/java/cn/modou/app/NativePageView.java")
+    if (pf.exists()) {
+        def md = java.security.MessageDigest.getInstance("MD5")
+        md.update(pf.bytes)
+        paginateHash = "p3-" + md.digest().collect { String.format("%02x", it & 0xFF) }.join().substring(0, 8)
+    }
+} catch (Exception ignore) {}
+
 android {
     namespace 'cn.modou.app'
     compileSdk 34
 
     defaultConfig {
         applicationId 'cn.modou.app'
-        minSdk 26
+        // 0.9.138：设备池已全部 API 31+。窗口级实时模糊（Window.setBackgroundBlurRadius）
+        // 与 RuntimeShader(AGSL) 都要求 31/33，低版本只能靠截屏硬凑，已整套删除。
+        minSdk 31
         targetSdk 34
-        versionCode 148
-        versionName '0.6.142'
+        versionCode 396
+        versionName "0.9.171"
+        // 分页算法版本（构建期注入 NativePageView.java 的内容哈希）：算法改动自动让旧页表失效
+        buildConfigField "String", "PAGINATE_VER", "\"$paginateHash\""
     }
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {
+            // 调试包也开 R8：用户装的、我们量的都是这个包，
+            // debug 不裁就等于「体积优化只存在于没人装的构建里」。
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             applicationIdSuffix '.debug'
         }
     }
@@ -34,10 +56,34 @@ android {
         buildConfig = true
     }
 
+    // dex 走传统压缩：不压缩时安装更快，但包体积凭空多出 500KB
+    // （classes.dex 1.05MB 里约一半是可压的常量池），下载和分发都要按压缩后算。
+    packaging {
+        dex {
+            useLegacyPackaging true
+        }
+    }
+
     // 零第三方依赖：NanoHTTPD 以源码内嵌（org/nanohttpd），网络用 JDK HttpURLConnection
 }
 
 dependencies {
+    // 编码统计探测（用户要求「没有声明时也不能乱码」）。纯 Java、无传递依赖。
+    implementation 'com.googlecode.juniversalchardet:juniversalchardet:1.0.3'
+
+    // 0.9.44 起破例引入 androidx（用户拍板）：列表交互（拖拽排序 / DiffUtil 局部刷新 /
+    // 多选不闪屏）的收益大于「零第三方依赖」的包体与离线构建收益。只收 recyclerview，
+    // 不引 appcompat / fragment / viewpager 这类会反过来要求换主题的大家伙。
+    //
+    // 0.9.46 修复启动闪退：曾经在这里 exclude org.jetbrains.kotlin，结果
+    // recyclerview 传递依赖的 customview-poolingcontainer 是 Kotlin 编译产物，
+    // 其类继承与方法签名引用了 kotlin-stdlib 里的类（RestrictedSuspendLambda /
+    // Sequence 等），R8 留下了这些悬空引用 → 启动到 new RecyclerView 时
+    // NoClassDefFoundError，必现闪退。教训：transitive 依赖的传递闭包一个都不能裁。
+    implementation 'androidx.recyclerview:recyclerview:1.3.2'
+    // 多选不引 recyclerview-selection：它要求把选中态托管给库（StableIdKeyProvider +
+    // SelectionTracker），而我们已有 sel 集合 + 底栏 CAB 的完整实现，
+    // 接进来只会多一套并行的状态源。拖拽排序用 ItemTouchHelper 即可。
 }
 
 // web/ 是唯一事实源：构建前自动同步进生成目录（与 Node dev server 共用同一份前端代码）

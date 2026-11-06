@@ -64,6 +64,144 @@ final class BookFiles {
         }
     }
 
+    /* ---------------- 删原始文件 ---------------- */
+
+    /**
+     * 按书籍记录删原文件。
+     *
+     * <p>为什么不能只看传进来的 JSON：书架列表用的是 **lite 精简记录**（LITE_KEYS），
+     * 里面没有 fileUri —— 直接删就会误报「没有记录原文件位置」。调用方拿到的
+     * 可能正是 lite，所以这里在缺 fileUri 时按「文件名 + 字节数」回媒体库找一遍。
+     */
+    static String deleteOriginal(Context c, JSONObject book) {
+        if (book == null) return "书籍记录缺失";
+        String id = book.optString("id", "");
+        String raw = book.optString("fileUri", "");
+        if (raw.trim().isEmpty()) raw = findUriInMedia(c, book);
+        return deleteOriginal(c, id, raw);
+    }
+
+    /** 老书没存 fileUri（或拿到的是 lite 记录）：拿书名 + 字节数去媒体库反查 */
+    private static String findUriInMedia(Context c, JSONObject book) {
+        try {
+            String bookUrl = book.optString("bookUrl", "");
+            String name = bookUrl.startsWith(LocalImport.LOCAL) && bookUrl.contains("#")
+                    ? bookUrl.substring(LocalImport.LOCAL.length(), bookUrl.lastIndexOf('#')) : "";
+            if (name.isEmpty()) return "";
+            long bytes = book.optLong("bytes", -1);
+            for (LocalScan.Item it : LocalScan.scan(c)) {
+                if (it == null || it.uri == null) continue;
+                if (!name.equals(it.name)) continue;
+                if (bytes > 0 && bytes != it.size) continue; // 同名不同大小 = 换过文件
+                return it.uri.toString();
+            }
+        } catch (Throwable ignore) {
+            /* 没有存储权限/媒体库查不到：返回空串，上层给提示 */
+        }
+        return "";
+    }
+
+    /**
+     * 删除本地书的**手机原文件**（不是库内缓存）。
+     *
+     * <p>为什么不能 new File(uri.getPath()).delete()：导入走的是系统文件选择器，
+     * 拿到的是 SAF 文档 Uri（content://com.android.externalstorage.documents/...），
+     * 它的 path 只是文档 id 的编码，根本不是真实路径，删不掉也不会报错 ——
+     * 这就是「勾了删除、库里记录没了、文件管理器里文件还在」的原因。
+     * 必须先 DocumentsContract.deleteDocument()。
+     *
+     * @return null 表示已删掉（或本来就不存在）；否则返回一句能给用户看的失败原因
+     */
+    static String deleteOriginal(Context c, String bookId, String rawUri) {
+        String raw = rawUri == null ? "" : rawUri.trim();
+        if (raw.isEmpty()) return "这本书没有记录原文件位置";
+
+        android.net.Uri u;
+        try {
+            u = android.net.Uri.parse(raw);
+        } catch (Throwable e) {
+            return "原文件地址无法识别";
+        }
+        String scheme = u.getScheme() == null ? "" : u.getScheme();
+
+        if ("file".equals(scheme)) {
+            String p = u.getPath();
+            File f = new File(p == null ? "" : p);
+            if (!f.exists()) {
+                clearImages(c, bookId);
+                return null; // 已经不在了，当作删成功
+            }
+            if (f.delete()) {
+                clearImages(c, bookId);
+                return null;
+            }
+            return "没有写入权限";
+        }
+        if (!"content".equals(scheme)) return "不支持的地址类型：" + scheme;
+
+        Throwable last = null;
+        android.content.ContentResolver cr = c.getContentResolver();
+
+        // 1) 标准文档 Uri —— SAF 导入的绝大多数是这种
+        try {
+            if (android.provider.DocumentsContract.isDocumentUri(c, u)
+                    && android.provider.DocumentsContract.deleteDocument(cr, u)) {
+                clearImages(c, bookId);
+                return null;
+            }
+        } catch (Throwable e) {
+            last = e;
+        }
+
+        // 2) 给的是树 Uri（文件夹）：用 tree + documentId 拼出文档 Uri 再删
+        try {
+            if (android.provider.DocumentsContract.isTreeUri(u)) {
+                String docId = android.provider.DocumentsContract.getTreeDocumentId(u);
+                android.net.Uri doc = android.provider.DocumentsContract
+                        .buildDocumentUriUsingTree(u, docId);
+                if (android.provider.DocumentsContract.deleteDocument(cr, doc)) {
+                    clearImages(c, bookId);
+                    return null;
+                }
+            }
+        } catch (Throwable e) {
+            last = e;
+        }
+
+        // 3) 普通 content Uri（下载管理器 / 网盘返回的）
+        try {
+            if (cr.delete(u, null, null) > 0) {
+                clearImages(c, bookId);
+                return null;
+            }
+        } catch (Throwable e) {
+            last = e;
+        }
+
+        // 4) 兜底：externalstorage 的文档 id 是 "primary:Books/a.txt"，能映射成真实路径。
+        //    只有拿到存储权限时才删得掉，删不掉也不报错。
+        try {
+            String docId = android.provider.DocumentsContract.getDocumentId(u);
+            int colon = docId == null ? -1 : docId.indexOf(':');
+            if (colon > 0) {
+                String vol = docId.substring(0, colon);
+                String rel = docId.substring(colon + 1);
+                File f = "primary".equalsIgnoreCase(vol)
+                        ? new File(android.os.Environment.getExternalStorageDirectory(), rel)
+                        : new File("/storage/" + vol + "/" + rel);
+                if (!f.exists() || f.delete()) {
+                    clearImages(c, bookId);
+                    return null;
+                }
+            }
+        } catch (Throwable ignore) {
+            /* 不是 externalstorage 的文档 id，走不到这条路 */
+        }
+
+        if (last instanceof SecurityException) return "应用没有删除权限（导入时只给了只读权限）";
+        return last == null ? "系统没有执行删除（文件可能已被移动）" : "系统拒绝了删除请求";
+    }
+
     /**
      * 插图落盘器：解析时把图写成文件，章节 HTML 里只留 file:// 地址。
      *

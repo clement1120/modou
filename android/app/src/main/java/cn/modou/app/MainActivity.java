@@ -24,7 +24,7 @@ public class MainActivity extends Activity {
     // v0.6.22 回退：v0.6.21 曾改成 43921 想绕开持久化缩放，但端口是 origin 的一部分——
     // IndexedDB/localStorage 按 origin 隔离，换端口等于让 App 改看空库（用户数据并未被删，
     // 只是指错了地方）。缩放态清理改用「删 Preferences + 运行时复位」，绝不碰 origin。
-    private static final int PORT = 39617;
+    static final int PORT = 39617;
     private static final int REQ_PICK_FILE = 39618;
     private static final int REQ_SAVE_FILE = 39619;
     /** 全局主题存档（开屏底色用，与 WebView 内 IndexedDB 的设置互为副本） */
@@ -54,6 +54,8 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         // 主题必须在 setContentView 之前定下：开屏那一瞬间显示的是 windowBackground，
         // 夜间模式下若还是浅色底，启动就会"亮一下"。存档由前端通过桥写入 SharedPreferences。
+        // 崩溃捕获必须最早装：后面 LocalServer / WebView 初始化都可能炸
+        Diagnostics.install(getApplicationContext());
         applySavedTheme();
         super.onCreate(savedInstanceState);
 
@@ -63,11 +65,20 @@ public class MainActivity extends Activity {
             server.start();
         } catch (Exception e) {
             Log.e(TAG, "local server start failed", e);
+            Diagnostics.event("本地服务启动失败: " + e);
         }
 
         // 1.2 书源服务：常驻无头 WebView 的原生侧门面。
         // 必须在本地服务起来之后 init —— 服务页要访问同源的 /proxy 才能发书源请求。
         SourceService.init(getApplicationContext(), PORT);
+
+        // 1.3 书架自动更新：一个系统任务（仅 WiFi + 充电，指数退避重试）。
+        // 幂等 —— 每次启动都调只是把队列里那一个的延迟重设回一天，
+        // 不会像「每本书一个闹钟」那样越攒越多。
+        // 放 1.5 秒后：注册 JobScheduler 要跨进程调 system_server，冷启动那几百毫秒
+        // 里它和书架首帧抢主线程。任务本身排的是「一天后」，晚 1.5 秒没有任何区别。
+        new android.os.Handler(android.os.Looper.getMainLooper())
+                .postDelayed(() -> ShelfUpdateJob.scheduleIfNeeded(getApplicationContext()), 1500);
 
         // 1.5 清理 WebView 历史遗留的缩放态（必须在 new WebView 前，文件无句柄占用）
         resetWebViewZoomState();
@@ -75,7 +86,7 @@ public class MainActivity extends Activity {
         // 冷启动先给一个与主题同色的空背景：WebView 延迟到书架盖住本页后再创建，
         // 这期间本窗口只在书架底下，用户看不到
         android.widget.FrameLayout boot = new android.widget.FrameLayout(this);
-        boot.setBackgroundColor(darkTheme ? 0xFF1B1A17 : 0xFFF5F0E2);
+        boot.setBackgroundColor(darkTheme ? 0xFF000000 : 0xFFF1F2F5);
         setContentView(boot);
 
         // 兜底：万一本地服务/装配异常，书架起不来，这里不再抢着建 WebView
@@ -180,7 +191,7 @@ public class MainActivity extends Activity {
         webView = new ReaderWebView(this);
         // WebView 在页面首帧绘制前显示的是它自己的背景色，默认白色。
         // 夜间模式下这段白底就是「冷启动闪一下亮色」的来源，按主题先铺成同色。
-        webView.setBackgroundColor(darkTheme ? 0xFF1B1A17 : 0xFFF5F0E2);
+        webView.setBackgroundColor(darkTheme ? 0xFF000000 : 0xFFF1F2F5);
         WebSettings ws = webView.getSettings();
         ws.setJavaScriptEnabled(true);
         ws.setDomStorageEnabled(true);          // localStorage / IndexedDB
@@ -239,6 +250,7 @@ public class MainActivity extends Activity {
             public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
                 boolean crashed = detail != null && detail.didCrash();
                 Log.e(TAG, "renderer gone, didCrash=" + crashed);
+                Diagnostics.event("WebView 渲染进程退出 didCrash=" + crashed);
                 try {
                     if (view.getParent() instanceof android.view.ViewGroup) {
                         ((android.view.ViewGroup) view.getParent()).removeView(view);
@@ -263,6 +275,16 @@ public class MainActivity extends Activity {
 
         // 5. <input type="file"> 文件选择器（WebView 默认不弹，必须壳提供）
         webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
+                // 只记 error/warning：普通 log 太多，会把真正有用的行冲掉
+                if (m != null && m.messageLevel() != android.webkit.ConsoleMessage.MessageLevel.LOG) {
+                    Diagnostics.event("JS " + m.messageLevel() + " " + m.message()
+                            + " @" + m.sourceId() + ":" + m.lineNumber());
+                }
+                return false;
+            }
+
             @Override
             public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
                 fileChooserCallback = callback;
@@ -293,6 +315,14 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        // 后台更新兜底（6 小时节流，与书架那边的调用共用同一个时间戳，不会跑两遍）。
+        // 国产 ROM 会拦 JobScheduler 的定时唤醒，只靠系统任务等于没有自动更新。
+        ShelfUpdater.maybeCatchUp(this, null);
+    }
+
+    @Override
     protected void onStop() {
         super.onStop();
         // 这里**不再**顺手创建 WebView：书架盖上来的那一刻正是用户要翻书的时候，
@@ -312,8 +342,9 @@ public class MainActivity extends Activity {
         boolean dark = "dark".equals(m);
         if ("auto".equals(m)) dark = isSystemDark();
         darkTheme = dark;
-        if (dark) setTheme(R.style.Theme_Modou_Dark);
-        // light 用 manifest 的默认 Theme.Modou，不必显式 setTheme
+        // 0.9.158：与原生各页走同一张「设计语言 × 深浅」映射表，
+        // 否则隐藏的 WebView 壳在换了设计语言后仍停在旧的窗口底色上。
+        setTheme(ModouUi.themeRes(DesignSpec.current(this), dark));
         // 把偏好同步给系统：下次冷启动的系统闪屏才能匹配（API 31+）
         syncApplicationNightMode(m);
     }
@@ -330,21 +361,9 @@ public class MainActivity extends Activity {
      * 平台闪屏在 onCreate 之前绘制，setTheme() 来不及，但系统记得这个偏好。
      */
     private void syncApplicationNightMode(String mode) {
-        if (android.os.Build.VERSION.SDK_INT < 31) return;
-        try {
-            android.app.UiModeManager um =
-                    (android.app.UiModeManager) getSystemService(android.content.Context.UI_MODE_SERVICE);
-            if (um == null) return;
-            int m;
-            if ("dark".equals(mode)) m = android.app.UiModeManager.MODE_NIGHT_YES;
-            // 注意：UiModeManager 没有 MODE_NIGHT_FOLLOW_SYSTEM；MODE_NIGHT_AUTO 会被框架
-            // 映射成 UI_MODE_NIGHT_UNDEFINED，即「不覆盖、跟随系统」，正是「跟随系统」需要的
-            else if ("auto".equals(mode)) m = android.app.UiModeManager.MODE_NIGHT_AUTO;
-            else m = android.app.UiModeManager.MODE_NIGHT_NO;
-            um.setApplicationNightMode(m);
-        } catch (Exception e) {
-            Log.w(TAG, "setApplicationNightMode failed", e);
-        }
+        // 统一交给 ModouUi：设置页 / 网页版 / 冷启动三条路都调同一个实现，
+        // 才不会出现「某一条路径忘了同步，切完要重启才生效」
+        ModouUi.applyApplicationNightMode(this, mode);
     }
 
     /**
@@ -579,7 +598,10 @@ public class MainActivity extends Activity {
         cb.onReceiveValue(uris);
     }
 
-    /** 从外部接收 .json 书源文件：读出内容，注入到前端全局回调 */
+    /**
+     * 从外部接收「用其他应用打开」的文件：书源 JSON 走原生解析写库，书籍走原生导入队列。
+     * 不再经隐藏 WebView 注入 JS（网页 UI 已退役）。
+     */
     private void handleViewIntent(Intent intent) {
         if (intent == null || !Intent.ACTION_VIEW.equals(intent.getAction())) return;
         Uri uri = intent.getData();
@@ -588,37 +610,78 @@ public class MainActivity extends Activity {
         String mime = intent.getType();
         boolean isJson = "application/json".equals(mime)
                 || (name != null && name.toLowerCase().endsWith(".json"));
+        if (isJson) {
+            String text = readViewText(uri);
+            if (text == null) {
+                ModouUi.toast(this, "读取书源文件失败");
+                return;
+            }
+            SourcesPanel.importSourcesText(this, text, () -> {
+                try {
+                    SourcesActivity.launch(MainActivity.this);
+                } catch (Throwable ignore) {
+                    /* 书源页起不来也别崩 */
+                }
+            });
+        } else {
+            // 书籍（TXT/EPUB）：交给原生导入队列，完成后回到书架。
+            long size = querySize(uri);
+            LocalImport.enqueue(this, uri, name, size, new LocalImport.Callback() {
+                @Override
+                public void onStage(String t) {
+                    if (t != null && !t.isEmpty()) ModouUi.toast(MainActivity.this, t);
+                }
+                @Override
+                public void onDone(LocalImport.Res r) {
+                    if (r != null && r.msg != null && !r.msg.isEmpty()) {
+                        ModouUi.toast(MainActivity.this, r.msg);
+                    }
+                    try {
+                        ShelfActivity.launch(MainActivity.this);
+                    } catch (Throwable ignore) {
+                        /* 书架起不来也别崩 */
+                    }
+                }
+            });
+        }
+    }
+
+    /** VIEW intent 的书籍文件大小（字节），取不到返回 0（导入队列视为未知） */
+    private long querySize(Uri uri) {
+        try (android.database.Cursor c = getContentResolver().query(uri, null, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                int idx = c.getColumnIndex(android.provider.OpenableColumns.SIZE);
+                if (idx >= 0 && !c.isNull(idx)) return c.getLong(idx);
+            }
+        } catch (Exception e) {
+            /* 忽略 */
+        }
+        return 0;
+    }
+
+    /** 把 VIEW intent 的书源文件整份读成字符串（含 UTF-8 BOM 剥离） */
+    private String readViewText(Uri uri) {
         try {
             InputStream is = getContentResolver().openInputStream(uri);
-            ByteArrayOutputStream bos = new ByteArrayOutputStream();
-            byte[] tmp = new byte[8192];
-            int n;
-            while ((n = is.read(tmp)) != -1) bos.write(tmp, 0, n);
-            is.close();
-            byte[] data = bos.toByteArray();
-            final String js;
-            if (isJson) {
-                // 书源 JSON：文本即可，前端走 parseSourcesJson
-                String text = new String(data, "UTF-8");
-                if (text.length() > 4 * 1024 * 1024) text = text.substring(0, 4 * 1024 * 1024);
-                js = "window.__modouFileResult && window.__modouFileResult("
-                        + org.json.JSONObject.quote(text) + "," + org.json.JSONObject.quote(name) + ")";
-            } else {
-                // 书籍（TXT/EPUB）：传原始字节的 Base64，前端交给本地导入（编码探测/EPUB 解析）
-                if (data.length > 20 * 1024 * 1024) {
-                    android.widget.Toast.makeText(this, "文件过大（>20MB），请在书架里用本地导入", android.widget.Toast.LENGTH_LONG).show();
-                    return;
+            if (is == null) return null;
+            try {
+                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                byte[] tmp = new byte[16384];
+                int n;
+                while ((n = is.read(tmp)) > 0) bos.write(tmp, 0, n);
+                String s = new String(bos.toByteArray(), "UTF-8");
+                if (!s.isEmpty() && s.charAt(0) == '\uFEFF') s = s.substring(1);
+                return s.trim();
+            } finally {
+                try {
+                    is.close();
+                } catch (Exception ignore) {
+                    /* 无所谓 */
                 }
-                String b64 = android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP);
-                js = "window.__modouBookFile && window.__modouBookFile("
-                        + org.json.JSONObject.quote(b64) + "," + org.json.JSONObject.quote(name) + ")";
             }
-            // 「用本应用打开」的书源/书籍文件要交给前端处理：这条路径必须要有引擎，
-            // 显式建一次（冷启动只在用户真的选了文件时才付这个代价）
-            ensureBridge();
-            injectWhenReady(js);
         } catch (Exception e) {
-            Log.w(TAG, "read view intent failed", e);
+            Log.w(TAG, "read view text failed", e);
+            return null;
         }
     }
 
@@ -753,7 +816,7 @@ public class MainActivity extends Activity {
                 android.view.Window w = getWindow();
                 android.view.View decor = w.getDecorView();
                 int color = on
-                        ? parseColor(colorHex, 0xFFF6F1E5)
+                        ? parseColor(colorHex, 0xFFF7F7F5)
                         : getResources().getColor(darkTheme ? R.color.app_bg_dark : R.color.app_bg);
                 w.addFlags(android.view.WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
                 w.setStatusBarColor(android.graphics.Color.TRANSPARENT);
@@ -868,15 +931,6 @@ public class MainActivity extends Activity {
                     || path.equals("sources") || path.equals("settings");
         } catch (Exception e) {
             return false;
-        }
-    }
-
-    /** 打开原生阅读页（实验）：payload 由前端拼好，这里只负责启动 */
-    void openNativeReader(ModouBridge b, String payload) {
-        try {
-            NativeReaderActivity.launch(this, b, payload);
-        } catch (Exception e) {
-            Log.e(TAG, "open native reader failed", e);
         }
     }
 

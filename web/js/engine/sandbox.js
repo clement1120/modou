@@ -90,9 +90,18 @@ function wrapDoc(doc) {
   });
 }
 
-/** Elements：Jsoup 的 select 返回集合，带 .text()/.size()/.get()/.first()/.last() */
+/**
+ * Elements：Jsoup 的 select 返回集合。
+ *
+ * 这里必须把 Jsoup 的**集合方法**补齐，而不只是单元素那套：
+ * 大量书源的 URL 规则写的是 `data.attr('action')`、`data.select('[name=_token]').attr('value')`
+ * —— Jsoup 的 Elements.attr 取**第一个**元素的属性。缺了它，JS 直接 TypeError，
+ * 被 _evalJsCode 吞掉后返回空串，用户只看到「请求地址为空（书源规则未解析出 URL）」，
+ * 根本猜不到是引擎不认识某个 Jsoup 方法。
+ */
 function wrapElems(arr) {
-  const list = (arr || []).map(wrapEl);
+  const raw = Array.isArray(arr) ? arr : Array.from(arr || []);
+  const list = raw.map(wrapEl);
   const def = (k, v) => {
     try {
       Object.defineProperty(list, k, { value: v, enumerable: false });
@@ -100,12 +109,41 @@ function wrapElems(arr) {
       /* 忽略 */
     }
   };
+  const first = () => list[0];
   def('text', () => list.map((e) => (e && e.text ? e.text() : '')).join(' ').trim());
   def('size', () => list.length);
+  def('isEmpty', () => list.length === 0);
   def('get', (i) => list[i]);
-  def('first', () => list[0]);
+  def('first', () => first());
   def('last', () => list[list.length - 1]);
+  def('eq', (i) => wrapElems(raw[i] ? [raw[i]] : []));
   def('html', () => list.map((e) => (e && e.html ? e.html() : '')).join(''));
+  def('outerHtml', () => list.map((e) => (e && e.outerHtml ? e.outerHtml() : '')).join(''));
+  def('attr', (name) => {
+    const e = first();
+    return (e && e.attr ? e.attr(name) : '') || '';
+  });
+  def('hasAttr', (name) => {
+    const e = first();
+    return !!(e && e.hasAttr && e.hasAttr(name));
+  });
+  def('eachAttr', (name) => list.map((e) => (e && e.attr ? e.attr(name) : '')));
+  def('val', () => {
+    const e = first();
+    return e && e.val ? e.val() : '';
+  });
+  def('eachText', () => list.map((e) => (e && e.text ? e.text() : '')));
+  def('select', (sel) => {
+    const out = [];
+    for (const el of raw) {
+      try {
+        out.push(...Array.from(el.querySelectorAll(trSel(sel))));
+      } catch (e) {
+        /* 选择器写错就当没选中，别把整条规则炸掉 */
+      }
+    }
+    return wrapElems(out);
+  });
   return list;
 }
 
@@ -125,6 +163,8 @@ function wrapEl(el) {
       if (k === 'html') return () => t.innerHTML || '';
       if (k === 'outerHtml') return () => t.outerHTML || '';
       if (k === 'attr') return (name) => t.getAttribute(name) || '';
+      if (k === 'hasAttr') return (name) => t.hasAttribute(name);
+      if (k === 'val') return () => t.getAttribute('value') || '';
       if (k === 'select') return (sel) => wrapElems(Array.from(t.querySelectorAll(tr(sel))));
       if (k === 'selectFirst') return (sel) => wrapEl(t.querySelector(tr(sel)));
       if (k === 'children') return () => wrapElems(Array.from(t.children));

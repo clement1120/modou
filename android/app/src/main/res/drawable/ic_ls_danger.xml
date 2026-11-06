@@ -1,0 +1,14 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <!-- 危险操作：圆角警示三角 + 叹号 -->
+    <path android:fillColor="#00000000"
+        android:pathData="M10.7,4.3 A1.5,1.5 0 0 1 13.3,4.3 L21.2,17.8 A1.5,1.5 0 0 1 19.9,20.1 H4.1 A1.5,1.5 0 0 1 2.8,17.8 Z"
+        android:strokeColor="#FFFFFFFF" android:strokeLineCap="round"
+        android:strokeLineJoin="round" android:strokeWidth="1.9" />
+    <path android:fillColor="#00000000"
+        android:pathData="M12,9.4 V14.4"
+        android:strokeColor="#FFFFFFFF" android:strokeLineCap="round" android:strokeWidth="2.1" />
+    <path android:fillColor="#FFFFFFFF"
+        android:pathData="M12,16.3 A1.1,1.1 0 1 1 12,18.5 A1.1,1.1 0 1 1 12,16.3 Z" />
+</vector>

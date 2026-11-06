@@ -1,0 +1,7 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <!-- Material Symbols · menu_book (filled)：实心剪影 + evenOdd 挖出中缝。 -->
+    <path android:fillColor="#FFFFFFFF" android:fillType="evenOdd"
+        android:pathData="M12,5.6 C10.2,4.3 8.2,3.7 5.6,3.7 C4.5,3.7 3.6,4.6 3.6,5.7 V18.3 C3.6,19.4 4.5,20.3 5.6,20.3 C8.2,20.3 10.2,19.7 12,18.4 C13.8,19.7 15.8,20.3 18.4,20.3 C19.5,20.3 20.4,19.4 20.4,18.3 V5.7 C20.4,4.6 19.5,3.7 18.4,3.7 C15.8,3.7 13.8,4.3 12,5.6 Z M11.05,6.4 V18.9 H12.95 V6.4 Z" />
+</vector>

@@ -1,0 +1,11 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <!-- Material Symbols · tune (outlined)：三条轨道 + 竖直滑杆，M3 标志性形状。 -->
+    <path android:fillColor="#00000000"
+        android:pathData="M4,6.5 H20 M4,12 H20 M4,17.5 H20"
+        android:strokeColor="#FFFFFFFF" android:strokeLineCap="round" android:strokeWidth="2" />
+    <path android:fillColor="#00000000"
+        android:pathData="M8.5,4 V9 M15.5,9.5 V14.5 M11,15 V20"
+        android:strokeColor="#FFFFFFFF" android:strokeLineCap="round" android:strokeWidth="2.4" />
+</vector>

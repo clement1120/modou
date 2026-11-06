@@ -3,8 +3,8 @@
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
-    <!-- 规则：漏斗（Material filter_alt） -->
+    <!-- 规则·实心：圆润漏斗，出口圆角化 -->
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M4.25,5.61C6.27,8.2 10,13 10,13v6c0,0.55 0.45,1 1,1h2c0.55,0 1,-0.45 1,-1v-6c0,0 3.72,-4.8 5.74,-7.39C20.25,4.95 19.78,4 18.95,4H5.04C4.21,4 3.74,4.95 4.25,5.61z" />
+        android:pathData="M5,6 H19 L13.3,13.2 V18 a1,1 0 0 1 -1,1 H11.7 a1,1 0 0 1 -1,-1 V13.2 Z" />
 </vector>

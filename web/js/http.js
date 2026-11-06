@@ -16,6 +16,10 @@ export async function fetchViaProxy(url, opts = {}) {
   if (opts.body != null) q.set('body', String(opts.body));
   // 书源选项里的 charset（如 {'charset':'gbk'}）：部分老站没有 meta/header 声明，必须靠它解码
   if (opts.charset) q.set('charset', String(opts.charset));
+  // 连接/读取超时分链路透传：体检（校验）连接 8s / 读取 12s，阅读 10s / 15s。
+  // 由 source.js 的 setRequestPolicy 按 isCheck 设好，经 /proxy?connect=&read= 落进 Java 网络层。
+  if (Number(opts.connectTimeout) > 0) q.set('connect', String(Math.round(opts.connectTimeout)));
+  if (Number(opts.readTimeout) > 0) q.set('read', String(Math.round(opts.readTimeout)));
 
   // 浏览器里用相对路径（同源）；Node 测试环境用绝对地址
   const origin = typeof location !== 'undefined' ? location.origin : 'http://127.0.0.1:8080';
@@ -50,6 +54,11 @@ export async function fetchViaProxy(url, opts = {}) {
         finalUrl: j.finalUrl,
         contentType: j.contentType,
         charset: j.charset,
+        headers: j.headers || {},
+        // 证书降级痕迹（见 ProxyHandler 的 TLS 档位）：空串表示走了正常严格校验。
+        // 'http' = 证书异常已改明文；'insecure' = 证书异常已忽略校验。
+        ssl: j.ssl || '',
+        sslNote: j.sslNote || '',
       };
     } catch (e) {
       if (timer) clearTimeout(timer);
@@ -67,6 +76,13 @@ export async function fetchViaProxy(url, opts = {}) {
   throw lastErr instanceof Error ? lastErr : new Error('网络请求失败');
 }
 
+/**
+ * URL 尾部的 Legado 请求选项串：`,{"method":"POST","body":"..."}`。
+ * 选项串里全是 { } " : 这些字符，一旦被 new URL() 编码成 %7B%22method%22…，
+ * 后面的 buildRequest 就认不出它是选项、只能当路径发出去 → 站点 404。
+ */
+const OPT_TAIL_RE = /[\s\u200B-\u200D\uFEFF\u3000]*[,，][\s\u200B-\u200D\uFEFF\u3000]*\{[\s\S]*\}\s*$/;
+
 /** 解析相对 URL（bookUrl/tocUrl/chapterUrl 经常是相对路径） */
 export function resolveUrl(base, u) {
   if (!u) return '';
@@ -75,6 +91,17 @@ export function resolveUrl(base, u) {
   u = fixNestedUrl(u);
   if (/^https?:\/\//i.test(u)) return u;
   if (u.startsWith('//')) return 'https:' + u;
+  // 带选项串的相对地址（连城读书 bookUrl = /app/info/bookindex,{"method":"POST",...}）：
+  // 只补全逗号前的路径部分，选项串原样拼回去。整串丢进 new URL() 会被百分号编码，
+  // 后续 buildRequest 匹配不到选项 → 明明该发 POST 却按 GET 请求了一个畸形路径 → 404。
+  const mo = OPT_TAIL_RE.exec(u);
+  if (mo && mo.index > 0) {
+    const head = u.slice(0, mo.index);
+    const tail = u.slice(mo.index);
+    // 路径里还留着 {{...}} 模板的，先不补全（new URL 会编码花括号），交给 buildRequest 填完再 _abs
+    if (/\{\{|\{\$/.test(head)) return head + tail;
+    return resolveUrl(base, head) + tail;
+  }
   if (!base) return u;
   try {
     return new URL(u, base).href;

@@ -52,11 +52,12 @@ final class ReaderLaunch {
             p.put("title", "");
             p.put("offset", nativeOffset(store, bookId, idx));
             p.put("fontSize", num(store, "readerFontSize", 18));
-            p.put("lineHeight", num(store, "readerLineHeight", 1.9));
+            p.put("lineHeight", num(store, "readerLineHeight", 2.0));
             p.put("paraGap", num(store, "readerParaGap", 1.0));
             p.put("margin", (int) num(store, "readerMargin", 16));
             p.put("font", store.settingStr("readerFontFamily", "song"));
             p.put("weight", (int) num(store, "readerFontWeight", 500));
+            p.put("justify", num(store, "readerJustify", 1) >= 0.5);
             p.put("theme", store.settingStr("readerLightTheme", "paper"));
             p.put("brightness", num(store, "readerBrightness", 1.0));
 
@@ -66,13 +67,21 @@ final class ReaderLaunch {
         }
     }
 
-    /** 只在同一章时恢复原生上次的章内位置：换章后旧偏移没有意义 */
+    /**
+     * 只在同一章时恢复上次的章内位置：换章后旧偏移没有意义。
+     *
+     * <p>{@code nativeOffset} 是原生页自己写的（排版后的字符偏移）。没有这个字段的是
+     * 老网页版留下的进度 —— 它只记 {@code offset}，语义同样是「章内第几个字符」。
+     * 直接用它可以接着上次的位置读，而不是每次都从章首重新开始。
+     */
     private static int nativeOffset(ModouStore store, String bookId, int idx) {
         try {
             String s = store.get("progress", bookId);
             if (s == null) return 0;
             JSONObject o = new JSONObject(s);
-            return o.optInt("index", -1) == idx ? Math.max(0, o.optInt("nativeOffset", 0)) : 0;
+            if (o.optInt("index", -1) != idx) return 0;
+            if (o.has("nativeOffset")) return Math.max(0, o.optInt("nativeOffset", 0));
+            return Math.max(0, o.optInt("offset", 0));   // 网页版老进度
         } catch (Exception e) {
             return 0;
         }

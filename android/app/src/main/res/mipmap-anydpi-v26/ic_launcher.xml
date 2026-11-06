@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标：背景纯白 + 前景位图（108dp 画布，图形压在 72dp 遮罩内，
+     边缘已漂白，圆形 / 圆角 / 水滴等各家遮罩下都不会露出硬边） -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@color/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
 </adaptive-icon>

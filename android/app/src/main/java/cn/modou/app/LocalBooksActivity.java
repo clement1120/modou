@@ -64,6 +64,13 @@ public class LocalBooksActivity extends Activity {
     private View emptyBox;
 
     private final List<Row> rows = new ArrayList<>();
+    /**
+     * 当前列表实际显示的行（先按搜索词过滤 rows 的结果）。
+     * 单独留一份是为了让 ListView 的 Adapter 只建一次、之后只 notifyDataSetChanged——
+     * 每次重扫/导入都 new 一个新 Adapter 会让 ListView 把滚动位置重置回顶部。
+     */
+    private final List<Row> shown = new ArrayList<>();
+    private BaseAdapter adapter;
     private String sortKey = "name_asc";
     private String query = "";
     private Uri tree;
@@ -186,7 +193,9 @@ public class LocalBooksActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(ui.bg);
         int p = ModouUi.dp(this, 14);
-        root.setPadding(p, p + statusBarPx(), p, p);
+        int e = ModouUi.topInset(this);
+        // 左右用全站顶栏标准：原来 14dp 比正文行还靠外一点点，圆钮看着发飘
+        root.setPadding(e, p + statusBarPx(), e, p);
 
         root.addView(buildHead());
 
@@ -313,7 +322,18 @@ public class LocalBooksActivity extends Activity {
         }
         if (req == REQ_FILE && res == Activity.RESULT_OK && data != null
                 && data.getData() != null) {
-            importUri(data.getData(), guessName(data.getData()), 0);
+            Uri u = data.getData();
+            // 长久读写权限：删除原文件 / 编辑后写回都需要写权限。
+            // 以前这里只申请了读权限，deleteDocument 必然抛 SecurityException，
+            // 表现就是「勾了删除，文件还在」。
+            try {
+                getContentResolver().takePersistableUriPermission(u,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            } catch (Exception ignore) {
+                /* 有些 provider 不给长期授权：本次能用就行 */
+            }
+            importUri(u, guessName(u), 0);
         }
     }
 
@@ -326,14 +346,21 @@ public class LocalBooksActivity extends Activity {
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
+        // 整行统一 46dp 行高：返回、标题、三个胶囊全部垂直居中对齐。
+        // 之前三者各自 wrap_content，返回 15sp、标题 20sp 衬线、按钮 12sp，
+        // 同一行里三种字号三种基线，看着「高低都不对」。
+        top.setMinimumHeight(ModouUi.dp(this, 46));
 
-        TextView back = ModouUi.tv(this, "‹ 返回", 15, ui.accent);
-        back.setPadding(0, 0, ModouUi.dp(this, 10), 0);
-        back.setOnClickListener((v) -> finish());
-        top.addView(back);
+        // 左上纯圆图标返回（无文字）：与全站顶栏同一颗 40dp 正圆 + 细线箭头
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                ModouUi.dp(this, 40), ModouUi.dp(this, 40));
+        blp.rightMargin = ModouUi.dp(this, 8);
+        top.addView(ModouUi.backBtn(this, () -> finish()), blp);
 
-        TextView title = ModouUi.tv(this, "本地书籍", 20, ui.text);
-        title.setTypeface(android.graphics.Typeface.SERIF, android.graphics.Typeface.BOLD);
+        TextView title = ModouUi.tv(this, "本地书籍", 21, ui.text);
+        title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        title.setLetterSpacing(-0.01f);
+        title.setIncludeFontPadding(false);
         top.addView(title, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
@@ -348,31 +375,44 @@ public class LocalBooksActivity extends Activity {
         top.addView(headBtn("排序", (v) -> chooseSort()));
         h.addView(top);
 
+        // 副标题行：左「当前文件夹 · N 本」、右「刷新」。
+        // 刷新放在这一行而不是顶栏：顶栏已经有 返回/搜索/文件夹/排序 四个控件，窄屏再加会挤没标题。
+        LinearLayout placeRow = new LinearLayout(this);
+        placeRow.setOrientation(LinearLayout.HORIZONTAL);
+        placeRow.setGravity(Gravity.CENTER_VERTICAL);
+
         place = ModouUi.tv(this, "", 12, ui.sub);
         place.setSingleLine(true);
         place.setEllipsize(TextUtils.TruncateAt.MIDDLE);
         place.setPadding(0, ModouUi.dp(this, 4), 0, ModouUi.dp(this, 6));
-        h.addView(place);
+        placeRow.addView(place, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        // 外部往文件夹里加了新文件？点一下重新扫描即可（SAF 不会自动通知内容变化）
+        TextView refresh = ModouUi.tv(this, "刷新", 12, ui.accent);
+        refresh.setPadding(ModouUi.dp(this, 12), ModouUi.dp(this, 4), 0, ModouUi.dp(this, 6));
+        refresh.setOnClickListener(v -> {
+            ModouUi.toast(this, "重新扫描文件夹…");
+            load();
+        });
+        placeRow.addView(refresh);
+        h.addView(placeRow);
         return h;
     }
 
     private TextView headBtn(String s, View.OnClickListener cb) {
-        // 三个入口 + 返回 + 标题要挤在一行里：窄屏（360dp）上按 12sp / 8dp 内边距排，
-        // 否则标题会被挤到看不见
-        TextView t = ModouUi.tv(this, s, 12, ui.text);
+        // 三个入口 + 返回 + 标题要挤在一行里：12.5sp / 左右 9dp / 固定 30dp 高。
+        // 固定高度是关键 —— 三个按钮高度一样、和标题同一条中轴，才不会一高一低。
+        TextView t = ModouUi.tv(this, s, 12.5f, ModouUi.alpha(ui.text, 0xD6));
         t.setGravity(Gravity.CENTER);
-        t.setPadding(ModouUi.dp(this, 8), ModouUi.dp(this, 6),
-                ModouUi.dp(this, 8), ModouUi.dp(this, 6));
-        android.graphics.drawable.GradientDrawable g =
-                new android.graphics.drawable.GradientDrawable();
-        g.setColor(ui.card);
-        g.setCornerRadius(ModouUi.dp(this, 999));
-        g.setStroke(Math.max(1, ModouUi.dp(this, 1)), ui.line);
-        t.setBackground(g);
+        t.setSingleLine(true);
+        t.setIncludeFontPadding(false);
+        t.setPadding(ModouUi.dp(this, 9), 0, ModouUi.dp(this, 9), 0);
+        t.setBackground(ModouUi.glass(this, 999));
         t.setOnClickListener(cb);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.leftMargin = ModouUi.dp(this, 4);
+                ViewGroup.LayoutParams.WRAP_CONTENT, ModouUi.dp(this, 30));
+        lp.leftMargin = ModouUi.dp(this, 6);
         t.setLayoutParams(lp);
         return t;
     }
@@ -572,39 +612,58 @@ public class LocalBooksActivity extends Activity {
     /* ---------------- 列表 ---------------- */
 
     private void paintList() {
-        List<Row> show = new ArrayList<>();
+        shown.clear();
         for (Row r : rows) {
             if (query.isEmpty() || r.name.toLowerCase(Locale.ROOT)
-                    .contains(query.toLowerCase(Locale.ROOT))) show.add(r);
+                    .contains(query.toLowerCase(Locale.ROOT))) shown.add(r);
         }
-        final List<Row> data = show;
-        boolean none = data.isEmpty();
+        boolean none = shown.isEmpty();
         emptyBox.setVisibility(none ? View.VISIBLE : View.GONE);
         list.setVisibility(none ? View.GONE : View.VISIBLE);
-        list.setAdapter(new BaseAdapter() {
-            @Override
-            public int getCount() {
-                return data.size();
-            }
+        // Adapter 只建一次：之后统一 notifyDataSetChanged。以前每次重绘都 new 一个 Adapter
+        // 塞给 ListView，等于告诉它「换了一整份数据」，滚动位置随之被重置回顶部——
+        // 用户连续导入几本，列表就一次次自己弹回顶上。
+        if (adapter == null) {
+            adapter = new BaseAdapter() {
+                @Override
+                public int getCount() {
+                    return shown.size();
+                }
 
-            @Override
-            public Object getItem(int i) {
-                return data.get(i);
-            }
+                @Override
+                public Object getItem(int i) {
+                    return shown.get(i);
+                }
 
-            @Override
-            public long getItemId(int i) {
-                return i;
-            }
+                @Override
+                public long getItemId(int i) {
+                    return i;
+                }
 
-            @Override
-            public View getView(int i, View cv, ViewGroup p) {
-                return rowView(data.get(i));
-            }
-        });
+                @Override
+                public View getView(int i, View cv, ViewGroup p) {
+                    LocalHolder h = (cv != null && cv.getTag() instanceof LocalHolder)
+                            ? (LocalHolder) cv.getTag() : newRow();
+                    bindRow(h, shown.get(i));
+                    return h.wrap;
+                }
+            };
+            list.setAdapter(adapter);
+        } else {
+            adapter.notifyDataSetChanged();
+        }
     }
 
-    private View rowView(Row r) {
+    /** 本地书行的 ViewHolder：固定 View 树，滚动时只改文本/显隐，不再每行 new 一套 */
+    private static final class LocalHolder {
+        LinearLayout wrap;
+        TextView dot, name, sub, tag, add;
+        android.graphics.drawable.GradientDrawable dotBg;
+        Row cur;
+    }
+
+    private LocalHolder newRow() {
+        final LocalHolder h = new LocalHolder();
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -612,67 +671,52 @@ public class LocalBooksActivity extends Activity {
                 ModouUi.dp(this, 6), ModouUi.dp(this, 10));
         row.setBackground(ModouUi.round(ui.card, 12));
 
-        // 多选态：左侧勾选圈。已导入的书不给勾（再导一次只是覆盖，没有意义）
-        if (selecting) {
-            TextView dot = ModouUi.tv(this, r.picked ? "✓" : "", 13,
-                    r.picked ? 0xFFFFFFFF : ui.line);
-            dot.setGravity(Gravity.CENTER);
-            int dd = ModouUi.dp(this, 22);
-            android.graphics.drawable.GradientDrawable g =
-                    new android.graphics.drawable.GradientDrawable();
-            g.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-            g.setColor(r.picked ? ui.accent : 0x00000000);
-            g.setStroke(Math.max(1, ModouUi.dp(this, 1.5f)), r.picked ? ui.accent : ui.line);
-            dot.setBackground(g);
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dd, dd);
-            lp.rightMargin = ModouUi.dp(this, 10);
-            row.addView(dot, lp);
-        }
+        // 多选态勾选圈：固定创建，靠 setVisibility 切换，避免切模式时重建 View 树
+        h.dot = ModouUi.tv(this, "", 13, ui.line);
+        h.dot.setGravity(Gravity.CENTER);
+        int dd = ModouUi.dp(this, 22);
+        h.dotBg = new android.graphics.drawable.GradientDrawable();
+        h.dotBg.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        h.dot.setBackground(h.dotBg);
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(dd, dd);
+        dlp.rightMargin = ModouUi.dp(this, 10);
+        row.addView(h.dot, dlp);
 
         LinearLayout txt = new LinearLayout(this);
         txt.setOrientation(LinearLayout.VERTICAL);
-        TextView t = ModouUi.tv(this, strip(r.name), 15, ui.text);
-        t.setSingleLine(true);
-        t.setEllipsize(TextUtils.TruncateAt.END);
-        txt.addView(t);
-        boolean failed = !r.imported && !r.busy && !r.err.isEmpty();
-        TextView s = ModouUi.tv(this, failed ? r.err
-                        : BookFiles.sizeText(r.size) + " · " + date(r.mtime),
-                12, failed ? warnColor() : ui.sub);
-        s.setSingleLine(!failed);
-        if (!failed) s.setEllipsize(TextUtils.TruncateAt.END);
-        if (failed) {
-            s.setPadding(0, ModouUi.dp(this, 2), 0, 0);
-            s.setMaxLines(2);
-        }
-        txt.addView(s);
+        h.name = ModouUi.tv(this, "", 15, ui.text);
+        h.name.setSingleLine(true);
+        h.name.setEllipsize(TextUtils.TruncateAt.END);
+        txt.addView(h.name);
+        h.sub = ModouUi.tv(this, "", 12, ui.sub);
+        txt.addView(h.sub);
         row.addView(txt, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        if (r.imported) {
-            TextView tag = ModouUi.tv(this, "已导入", 12.5f, ui.sub);
-            tag.setPadding(ModouUi.dp(this, 8), ModouUi.dp(this, 4),
-                    ModouUi.dp(this, 8), ModouUi.dp(this, 4));
-            row.addView(tag);
-        } else if (!selecting) {
-            TextView add = ModouUi.tv(this, r.busy ? "…" : "＋", 18,
-                    r.busy ? ui.sub : ui.accent);
-            add.setGravity(Gravity.CENTER);
-            int d = ModouUi.dp(this, 34);
-            add.setLayoutParams(new LinearLayout.LayoutParams(d, d));
-            android.graphics.drawable.GradientDrawable g =
-                    new android.graphics.drawable.GradientDrawable();
-            g.setColor(0x00000000);
-            g.setCornerRadius(d / 2f);
-            g.setStroke(Math.max(1, ModouUi.dp(this, 1.5f)), ui.line);
-            add.setBackground(g);
-            add.setOnClickListener((v) -> importRow(r));
-            row.addView(add);
-        }
+        h.tag = ModouUi.tv(this, "已导入", 12.5f, ui.sub);
+        h.tag.setPadding(ModouUi.dp(this, 8), ModouUi.dp(this, 4),
+                ModouUi.dp(this, 8), ModouUi.dp(this, 4));
+        row.addView(h.tag);
 
-        // 整行也可点：未导入的等同点「＋」（手指不一定点得准那个小圆），
-        // 已导入的给一句明确回话，避免「点了没反应」
-        row.setOnClickListener((v) -> {
+        h.add = ModouUi.tv(this, "＋", 18, ui.accent);
+        h.add.setGravity(Gravity.CENTER);
+        int d = ModouUi.dp(this, 34);
+        h.add.setLayoutParams(new LinearLayout.LayoutParams(d, d));
+        android.graphics.drawable.GradientDrawable addBg =
+                new android.graphics.drawable.GradientDrawable();
+        addBg.setColor(0x00000000);
+        addBg.setCornerRadius(d / 2f);
+        addBg.setStroke(Math.max(1, ModouUi.dp(this, 1.5f)), ui.line);
+        h.add.setBackground(addBg);
+        h.add.setOnClickListener(v -> {
+            if (h.cur != null) importRow(h.cur);
+        });
+        row.addView(h.add);
+
+        // 监听器读 h.cur（当前绑定的行），不能捕获创建时的 r：复用后位置会串
+        row.setOnClickListener(v -> {
+            Row r = h.cur;
+            if (r == null) return;
             if (selecting) {
                 if (r.imported) {
                     ModouUi.toast(this, "《" + strip(r.name) + "》已经在书架里了");
@@ -688,8 +732,9 @@ public class LocalBooksActivity extends Activity {
             }
         });
         // 长按任意一本进入多选：整本书太多时，一本本点「＋」太慢
-        row.setOnLongClickListener((v) -> {
-            if (!selecting) {
+        row.setOnLongClickListener(v -> {
+            Row r = h.cur;
+            if (r != null && !selecting) {
                 selecting = true;
                 for (Row x : rows) x.picked = false;
                 r.picked = !r.imported;
@@ -703,7 +748,47 @@ public class LocalBooksActivity extends Activity {
         wrap.setOrientation(LinearLayout.VERTICAL);
         wrap.addView(row);
         wrap.setPadding(0, 0, 0, ModouUi.dp(this, 8));
-        return wrap;
+        wrap.setTag(h);
+        h.wrap = wrap;
+        return h;
+    }
+
+    private void bindRow(LocalHolder h, Row r) {
+        h.cur = r;
+        boolean failed = !r.imported && !r.busy && !r.err.isEmpty();
+
+        // 勾选圈：多选时才出现；颜色/描边随 picked 变，drawable 复用不重建
+        h.dot.setVisibility(selecting ? View.VISIBLE : View.GONE);
+        if (selecting) {
+            h.dot.setText(r.picked ? "✓" : "");
+            h.dot.setTextColor(r.picked ? 0xFFFFFFFF : ui.line);
+            h.dotBg.setColor(r.picked ? ui.accent : 0x00000000);
+            h.dotBg.setStroke(Math.max(1, ModouUi.dp(this, 1.5f)),
+                    r.picked ? ui.accent : ui.line);
+        }
+
+        h.name.setText(strip(r.name));
+        h.sub.setText(failed ? r.err : BookFiles.sizeText(r.size) + " · " + date(r.mtime));
+        h.sub.setTextColor(failed ? warnColor() : ui.sub);
+        // 双向重置：failed 行放宽过 maxLines/padding，复用成普通行必须还原，否则串位
+        if (failed) {
+            h.sub.setSingleLine(false);
+            h.sub.setMaxLines(2);
+            h.sub.setEllipsize(null);
+            h.sub.setPadding(0, ModouUi.dp(this, 2), 0, 0);
+        } else {
+            h.sub.setSingleLine(true);
+            h.sub.setMaxLines(1);
+            h.sub.setEllipsize(TextUtils.TruncateAt.END);
+            h.sub.setPadding(0, 0, 0, 0);
+        }
+
+        h.tag.setVisibility(r.imported ? View.VISIBLE : View.GONE);
+        h.add.setVisibility(!r.imported && !selecting ? View.VISIBLE : View.GONE);
+        if (!r.imported && !selecting) {
+            h.add.setText(r.busy ? "…" : "＋");
+            h.add.setTextColor(r.busy ? ui.sub : ui.accent);
+        }
     }
 
     private static String strip(String n) {
@@ -766,12 +851,7 @@ public class LocalBooksActivity extends Activity {
         t.setGravity(Gravity.CENTER);
         t.setPadding(ModouUi.dp(this, 16), ModouUi.dp(this, 10),
                 ModouUi.dp(this, 16), ModouUi.dp(this, 10));
-        android.graphics.drawable.GradientDrawable g =
-                new android.graphics.drawable.GradientDrawable();
-        g.setColor(0x00000000);
-        g.setCornerRadius(ModouUi.dp(this, 10));
-        g.setStroke(Math.max(1, ModouUi.dp(this, 1)), ui.accent);
-        t.setBackground(g);
+        t.setBackground(ModouUi.squircle(this, 0x00000000, 10, ui.accent, 1));
         t.setOnClickListener(cb);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -949,7 +1029,9 @@ public class LocalBooksActivity extends Activity {
             Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             i.setType("*/*");
             i.addCategory(Intent.CATEGORY_OPENABLE);
-            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
             startActivityForResult(i, REQ_FILE);
         } catch (Exception e) {
             ModouUi.toast(this, "打不开文件选择器");

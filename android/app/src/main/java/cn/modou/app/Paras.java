@@ -44,11 +44,11 @@ public final class Paras {
         // 块级边界（开标签/闭标签都算切点）
         String[] chunks = html.split("(?i)</?(p|br|div|li|h[1-6]|blockquote|tr)\\b[^>]*>");
         for (String c : chunks) {
-            String s = decode(stripTags(c))
+            String s = tighten(decode(stripTags(c))
                     .replace('\u00a0', ' ')
                     .replace('\u3000', ' ')
                     .replaceAll("\\s+", " ")
-                    .trim();
+                    .trim());
             if (!s.isEmpty()) out.add(s);
         }
         String name = chapterName == null ? "" : chapterName.replaceAll("\\s+", "");
@@ -56,11 +56,60 @@ public final class Paras {
                 && out.get(0).replaceAll("\\s+", "").equals(name)) {
             out.remove(0);
         }
+        return mergeOrphanPunct(out);
+    }
+
+    /** 绝不能出现在段首的收尾标点（与排版层 NO_LINE_START 同一套） */
+    private static final String NO_LEAD =
+            "，。、；：？！）〕】》」』”’,.;:?!)]}>»";
+
+    /**
+     * 段首是收尾标点的，粘回上一段。
+     *
+     * 正文里「…他说」后面跟着 `<br>`，标点被 HTML 块边界切到了下一段开头 ——
+     * 排版层的避头尾遇到段落边界只能放行（那是正常的断段），于是屏幕上每段都
+     * 顶着一个「，」。这不是排版能救的，只能在解析这一步把半句的壳子拼回去。
+     */
+    private static List<String> mergeOrphanPunct(List<String> in) {
+        if (in == null || in.size() < 2) return in;
+        List<String> out = new ArrayList<>(in.size());
+        for (String s : in) {
+            if (!out.isEmpty() && NO_LEAD.indexOf(s.charAt(0)) >= 0) {
+                int last = out.size() - 1;
+                out.set(last, out.get(last) + s);
+            } else {
+                out.add(s);
+            }
+        }
         return out;
     }
 
     private static String stripTags(String s) {
         return s.replaceAll("(?i)<[^>]+>", "");
+    }
+
+    /**
+     * 简介这类短 HTML → 多行纯文本：去标签、解实体、折叠空白。
+     *
+     * 在线书源的 intro 常常整段就是 HTML：`&nbsp;&nbsp;一念成沧海…<br>&nbsp;…`。
+     * 直接塞进 TextView 会把「&nbsp;」和「<br>」原样显示出来 —— 用户看到的就是
+     * 图里那行「&nbsp;&nbsp;&nbsp;&nbsp;一念成沧海…<br>&nbsp;…」。
+     */
+    public static String plain(String html) {
+        if (html == null || html.isEmpty()) return "";
+        StringBuilder out = new StringBuilder();
+        String[] chunks = html.split("(?i)</?(p|br|div|li|h[1-6]|blockquote|tr)\\b[^>]*>");
+        for (String c : chunks) {
+            String s = decode(stripTags(c))
+                    .replace('\u00a0', ' ')
+                    .replace('\u3000', ' ')
+                    .replaceAll("[ \\t\\x0B\\f\\r]+", " ")
+                    .trim();
+            if (s.isEmpty()) continue;
+            if (out.length() > 0) out.append('\n');
+            out.append(s);
+        }
+        return out.toString();
     }
 
     /* ---------- 块序列（图文混排用） ---------- */
@@ -138,13 +187,52 @@ public final class Paras {
         return out;
     }
 
+    /**
+     * 吞掉夹在汉字之间的空白。
+     *
+     * HTML 里的缩进、换行、&nbsp;、全角空格，在折叠空白那一步都会变成一个半角空格，
+     * 落在中文句子里就成了一道莫名的缝 —— 屏幕上看着就是「处 那个房间」这种
+     * 字中间凭空多出一个大空格。汉字之间本来不需要空格，只有两侧都是西文时
+     * 那一个空格才有意义（英文单词分隔）。
+     */
+    static String tighten(String s) {
+        if (s == null || s.isEmpty() || s.indexOf(' ') < 0) return s;
+        StringBuilder b = new StringBuilder(s.length());
+        int n = s.length();
+        for (int i = 0; i < n; i++) {
+            char c = s.charAt(i);
+            if (c != ' ') {
+                b.append(c);
+                continue;
+            }
+            int j = i;
+            while (j < n && s.charAt(j) == ' ') j++;
+            char p = b.length() > 0 ? b.charAt(b.length() - 1) : 0;
+            char q = j < n ? s.charAt(j) : 0;
+            // 两侧（或任意一侧）是汉字/全角标点：这个空格是排版残留，直接丢掉
+            if (isCjk(p) || isCjk(q) || q == 0) {
+                i = j - 1;
+                continue;
+            }
+            b.append(' ');
+            i = j - 1;
+        }
+        return b.toString();
+    }
+
+    private static boolean isCjk(char c) {
+        return (c >= 0x3000 && c <= 0x303F) || (c >= 0x4E00 && c <= 0x9FFF)
+                || (c >= 0x3400 && c <= 0x4DBF) || (c >= 0xF900 && c <= 0xFAFF)
+                || (c >= 0xFF00 && c <= 0xFF65);
+    }
+
     private static void addText(List<Block> out, String raw) {
         if (raw == null || raw.isEmpty()) return;
-        String s = decode(stripTags(raw))
+        String s = tighten(decode(stripTags(raw))
                 .replace('\u00a0', ' ')
                 .replace('\u3000', ' ')
                 .replaceAll("\\s+", " ")
-                .trim();
+                .trim());
         if (!s.isEmpty()) out.add(Block.text(s));
     }
 
@@ -183,6 +271,17 @@ public final class Paras {
             else if (ent.equalsIgnoreCase("gt")) rep = ">";
             else if (ent.equalsIgnoreCase("quot")) rep = "\"";
             else if (ent.equalsIgnoreCase("apos") || ent.equals("#39")) rep = "'";
+            // 中文书源常见的排版实体：不认它们就会把「&ldquo;」原样留在正文/简介里
+            else if (ent.equalsIgnoreCase("ldquo")) rep = "\u201C";
+            else if (ent.equalsIgnoreCase("rdquo")) rep = "\u201D";
+            else if (ent.equalsIgnoreCase("lsquo")) rep = "\u2018";
+            else if (ent.equalsIgnoreCase("rsquo")) rep = "\u2019";
+            else if (ent.equalsIgnoreCase("hellip")) rep = "\u2026";
+            else if (ent.equalsIgnoreCase("mdash")) rep = "\u2014";
+            else if (ent.equalsIgnoreCase("ndash")) rep = "\u2013";
+            else if (ent.equalsIgnoreCase("middot")) rep = "\u00B7";
+            else if (ent.equalsIgnoreCase("emsp") || ent.equalsIgnoreCase("ensp")
+                    || ent.equalsIgnoreCase("thinsp")) rep = " ";
             else {
                 try {
                     int cp;

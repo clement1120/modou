@@ -84,6 +84,24 @@ final class HomePager extends ViewGroup {
         listener = l;
     }
 
+    /**
+     * 侧滑闸门：返回 true 时整段横向手势不响应（左右滑都停住）。
+     * 书源页多选态靠它把「右滑回书架」挡住，否则一滑就丢勾选。
+     */
+    interface SwipeGate {
+        boolean locked();
+    }
+
+    private SwipeGate gate;
+
+    void setSwipeGate(SwipeGate g) {
+        gate = g;
+    }
+
+    private boolean swipeLocked() {
+        return gate != null && gate.locked();
+    }
+
     int page() {
         return cur;
     }
@@ -136,6 +154,7 @@ final class HomePager extends ViewGroup {
 
     @Override
     public boolean onInterceptTouchEvent(android.view.MotionEvent ev) {
+        if (swipeLocked()) return false;
         switch (ev.getActionMasked()) {
             case android.view.MotionEvent.ACTION_DOWN:
                 downX = ev.getX();
@@ -167,6 +186,7 @@ final class HomePager extends ViewGroup {
 
     @Override
     public boolean onTouchEvent(android.view.MotionEvent ev) {
+        if (swipeLocked()) return false;
         if (velocity == null) velocity = VelocityTracker.obtain();
         velocity.addMovement(ev);
         switch (ev.getActionMasked()) {

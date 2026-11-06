@@ -6,6 +6,7 @@ import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 import android.database.sqlite.SQLiteStatement;
+import android.util.Log;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -42,8 +43,15 @@ import java.util.Set;
  * 表 → 主键（与 web/js/db.js 的 KEY_PATHS 保持一致）：
  *   sources / books / chapters / bookmarks → id；progress → bookId；settings → k
  *
- * 所有 public 方法都 synchronized：桥方法跑在 WebView 的 JavaBridge 线程，
- * 原生阅读页将来也会从别的线程读库。
+ * 锁策略（P-2）：写方法 synchronized，读方法不再加锁。
+ *
+ * 以前所有 public 方法都 synchronized，桥方法跑在 WebView 的 JavaBridge 线程，
+ * 原生阅读页也从别的线程读库 —— 一次 booksLite() 的大查询会把导航、换章时的
+ * 章节读取全排在它后面。现在：
+ *  - 写（put/putMany/cacheChapter/del/clear…）仍然串行，保证「读-改-写」不交错；
+ *  - 读（get/all/booksLite/chapterContent…）不加锁，直接依赖 SQLiteDatabase
+ *    自身的线程安全与 WAL 快照：读看到的是稳定旧版本，不会读到写了一半的数据。
+ * 占用时间更长的维护操作（VACUUM / 孤儿章节清理）仍是写锁，避免和读抢锁时把库弄忙。
  */
 public class ModouStore extends SQLiteOpenHelper {
 
@@ -55,7 +63,10 @@ public class ModouStore extends SQLiteOpenHelper {
      * 存在 settings 里，settings.js 仍会对它调 db.clear，表必须对得上，否则调用落空）。
      */
     private static final String[] TABLES = {
-            "sources", "books", "progress", "chapters", "replaceRules", "settings", "bookmarks"
+            "sources", "books", "progress", "chapters", "replaceRules", "settings", "bookmarks",
+            // 换源结果缓存（SourceSwap 用）。之前漏在这张白名单外：put/get 全被 valid()
+            // 拦掉，缓存永远存不进也读不出 —— 表现为「换源每次重开都从头搜」。
+            "swapCache"
     };
 
     private static volatile ModouStore instance;
@@ -103,6 +114,10 @@ public class ModouStore extends SQLiteOpenHelper {
             db.execSQL("PRAGMA synchronous=NORMAL");
             // 页缓存放大到 8MB：导入时按 1.2MB 一批写，缓存够大才能少读回磁盘
             db.execSQL("PRAGMA cache_size=-8000");
+            // 以前注释里写着 WAL，代码却从没开过 —— 读（翻章查正文）和写（存进度）
+            // 一直在抢同一把锁，翻页时偶发的顿感就是这么来的。
+            // WAL 让读不阻塞写、写不阻塞读，且提交只追加 WAL 页、不 fsync 主库。
+            if (!db.isReadOnly()) db.enableWriteAheadLogging();
         } catch (Exception ignore) {
             /* PRAGMA 不支持就按默认值来 */
         }
@@ -116,9 +131,13 @@ public class ModouStore extends SQLiteOpenHelper {
                 + "id TEXT PRIMARY KEY, name TEXT, author TEXT, grp TEXT, kind TEXT, "
                 + "addedAt INTEGER, updatedAt INTEGER, json TEXT, lite TEXT)");
         db.execSQL("CREATE TABLE IF NOT EXISTS progress (bookId TEXT PRIMARY KEY, json TEXT)");
-        db.execSQL("CREATE TABLE IF NOT EXISTS chapters (id TEXT PRIMARY KEY, content TEXT, cachedAt INTEGER)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS chapters ("
+                + "id TEXT PRIMARY KEY, content TEXT, cachedAt INTEGER, book_id TEXT, idx INTEGER)");
         db.execSQL("CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT)");
         db.execSQL("CREATE TABLE IF NOT EXISTS bookmarks (id TEXT PRIMARY KEY, json TEXT)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS swapCache (id TEXT PRIMARY KEY, json TEXT)");
+        SourceHealth.ensureTable(db);
+        ensureChapterIndex(db, false);
     }
 
     @Override
@@ -133,6 +152,7 @@ public class ModouStore extends SQLiteOpenHelper {
         db.execSQL("CREATE TABLE IF NOT EXISTS chapters (id TEXT PRIMARY KEY, content TEXT, cachedAt INTEGER)");
         db.execSQL("CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT)");
         db.execSQL("CREATE TABLE IF NOT EXISTS bookmarks (id TEXT PRIMARY KEY, json TEXT)");
+        SourceHealth.ensureTable(db);
     }
 
     /**
@@ -188,15 +208,25 @@ public class ModouStore extends SQLiteOpenHelper {
         }
     }
 
-    private static final String[] LITE_KEYS = {
+        private static final String[] LITE_KEYS = {
             "id", "sourceUrl", "sourceName", "name", "author", "kind",
             "lastChapter", "group", "addedAt", "updatedAt", "fav", "preview",
-            "bytes", "localPath", "coverUrl"
+            "bytes", "localPath", "coverUrl", "importing",
+            // 删除原文件要用：书架上直接拿 lite 记录删书时，没有这两个字段就会误报
+            // 「没有记录原文件位置」（fileUri = SAF 文档地址，bookUrl 带文件名用于反查）
+            "fileUri", "bookUrl"
     };
 
     @Override
     public void onOpen(SQLiteDatabase db) {
         super.onOpen(db);
+        // 换源缓存表：DB_VERSION 仍是 1，老库不会重跑 onCreate，这里每次打开兜底建一次。
+        // 缺了它，SourceSwap 的 put/get 会被 valid() 白名单拦掉，缓存静默失效。
+        try {
+            db.execSQL("CREATE TABLE IF NOT EXISTS swapCache (id TEXT PRIMARY KEY, json TEXT)");
+        } catch (Exception ignore) {
+            /* 建不上就退化为「不缓存」，换源本身仍可用 */
+        }
         // 老库补 lite 列：CREATE TABLE IF NOT EXISTS 不会给已有表加列，
         // 而 DB_VERSION 还停在 1（不想为加一列去触发整套 onUpgrade）。
         try {
@@ -215,10 +245,66 @@ public class ModouStore extends SQLiteOpenHelper {
         //    阅读页等一次正文就排在这次全表扫后面 —— 表现是「下一章死活加载不出来」。
         //  · idx_books_shelf —— 覆盖索引：booksLite() 要的列全在里面，
         //    SQLite 只扫索引、不读表记录，书架刷新与 json 大小彻底解耦。
+        SourceHealth.ensureTable(db); // 老库没有这张表：CREATE IF NOT EXISTS 直接补上
+        ensureChapterIndex(db, true);
         try {
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_lite ON books(lite)");
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_shelf ON books("
                     + "id, name, author, grp, kind, addedAt, updatedAt, lite)");
+        } catch (Exception ignore) {
+            /* 建不上索引只是慢一点，功能不受影响 */
+        }
+    }
+
+    /**
+     * chapters 的 (book_id, idx) 复合索引。
+     *
+     * <p>主键是 {@code bookId||index} 拼出来的字符串，按书查章节只能
+     * {@code SELECT id FROM chapters} 全表扫（几十万行时，打开书要等一次全扫）。
+     * 这里补两列真实值 + 复合索引，让「这本书有哪些章」变成索引区间查找。
+     *
+     * <p>列值由触发器维护，而不是改 Java 里所有写章节的路径（通用 put、批量
+     * putChapters、EPUB 导入各一套，逐处加参数很容易漏一处，漏了那章就查不到）。
+     *
+     * @param migrate 老库为 true：补列、回填历史行；新库直接建好，不用回填
+     */
+    private static void ensureChapterIndex(SQLiteDatabase db, boolean migrate) {
+        try {
+            if (migrate) {
+                if (!hasColumn(db, "chapters", "book_id")) {
+                    db.execSQL("ALTER TABLE chapters ADD COLUMN book_id TEXT");
+                }
+                if (!hasColumn(db, "chapters", "idx")) {
+                    db.execSQL("ALTER TABLE chapters ADD COLUMN idx INTEGER");
+                }
+            }
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_chapters_book ON chapters(book_id, idx)");
+            // 触发器：通用写入路径（put 系列）不认这两列，靠它自动补。
+            // WHEN NEW.book_id IS NULL —— 批量导入走 putChapters，那里直接 bind 了
+            // 两列，触发器就不再多跑一次 UPDATE（否则导入时每章写两遍，慢一倍）。
+            db.execSQL("CREATE TRIGGER IF NOT EXISTS trg_chapters_book AFTER INSERT ON chapters "
+                    + "WHEN NEW.book_id IS NULL "
+                    + "BEGIN UPDATE chapters SET "
+                    + "book_id = substr(NEW.id, 1, instr(NEW.id, '||') - 1), "
+                    + "idx = CAST(substr(NEW.id, instr(NEW.id, '||') + 2) AS INTEGER) "
+                    + "WHERE id = NEW.id AND instr(NEW.id, '||') > 0; END");
+            if (!migrate) return;
+            // 历史行回填：只跑一次（book_id 为空的行）。行数太多就跳过，
+            // 宁可索引暂时只覆盖新数据，也不要在冷启动时卡几秒。
+            Cursor c = null;
+            long pending = 0;
+            try {
+                c = db.rawQuery("SELECT COUNT(*) FROM chapters WHERE book_id IS NULL", null);
+                if (c.moveToFirst()) pending = c.getLong(0);
+            } finally {
+                if (c != null) try { c.close(); } catch (Exception ignore) { }
+            }
+            if (pending > 0 && pending <= 400000) {
+                db.execSQL("UPDATE chapters SET "
+                        + "book_id = substr(id, 1, instr(id, '||') - 1), "
+                        + "idx = CAST(substr(id, instr(id, '||') + 2) AS INTEGER) "
+                        + "WHERE book_id IS NULL AND instr(id, '||') > 0");
+            }
         } catch (Exception ignore) {
             /* 建不上索引只是慢一点，功能不受影响 */
         }
@@ -280,7 +366,7 @@ public class ModouStore extends SQLiteOpenHelper {
     /* ---------- 读 ---------- */
 
     /** 单条；不存在返回 null（与 IndexedDB 的 get 语义一致） */
-    public synchronized String get(String table, String key) {
+    public String get(String table, String key) {
         if (!valid(table) || key == null) return null;
         // chapters 的正文可能超过 CursorWindow 单行上限（内联插图的章节能到几 MB），
         // 走分片读，别让桥那边也拿到一个 null
@@ -318,7 +404,7 @@ public class ModouStore extends SQLiteOpenHelper {
     }
 
     /** 全表对象数组（JSON 字符串）。chapters 慎用：会把全部正文搬进内存 */
-    public synchronized String all(String table) {
+    public String all(String table) {
         if (!valid(table)) return "[]";
         JSONArray arr = new JSONArray();
         Cursor c = null;
@@ -338,7 +424,7 @@ public class ModouStore extends SQLiteOpenHelper {
     }
 
     /** 全表主键数组（JSON 字符串） */
-    public synchronized String keys(String table) {
+    public String keys(String table) {
         if (!valid(table)) return "[]";
         JSONArray arr = new JSONArray();
         Cursor c = null;
@@ -424,7 +510,7 @@ public class ModouStore extends SQLiteOpenHelper {
      * `new JSONObject(那条记录)` 就是一次肉眼可见的卡顿（「点封面半天没反应」）。
      * 轻量记录只有几百字节，先把界面画出来，目录随后后台补。
      */
-    public synchronized JSONObject bookLite(String id) {
+    public JSONObject bookLite(String id) {
         if (id == null || id.isEmpty()) return null;
         Cursor c = null;
         try {
@@ -478,7 +564,7 @@ public class ModouStore extends SQLiteOpenHelper {
         return v == null ? "" : v;
     }
 
-    public synchronized String booksLite() {
+    public String booksLite() {
         JSONArray arr = new JSONArray();
         Cursor c = null;
         try {
@@ -638,7 +724,7 @@ public class ModouStore extends SQLiteOpenHelper {
      * 为了判断「这本书导入过没有」把它读出来再解析，扫一次书就是白搬几 MB。
      * id 的前缀就是 bookUrl（id = "local://||" + bookUrl），截掉即可。
      */
-    public synchronized List<String> localBookUrls() {
+    public List<String> localBookUrls() {
         List<String> out = new ArrayList<>();
         Cursor c = null;
         try {
@@ -664,7 +750,7 @@ public class ModouStore extends SQLiteOpenHelper {
      * 这是原生 SQL 相对 IndexedDB 的硬优势：统计正文缓存体积，IndexedDB 只能开游标
      * 把每章 HTML 逐条读进 JS 堆（db.js 注释明确警告过会卡死/闪退），SQL 一条聚合搞定。
      */
-    public synchronized long sumLength(String table, String column) {
+    public long sumLength(String table, String column) {
         if (!valid(table) || column == null) return 0;
         if (!"content".equals(column) && !"json".equals(column) && !"v".equals(column)) return 0;
         Cursor c = null;
@@ -681,7 +767,7 @@ public class ModouStore extends SQLiteOpenHelper {
     }
 
     /** 行数 */
-    public synchronized long count(String table) {
+    public long count(String table) {
         if (!valid(table)) return 0;
         Cursor c = null;
         try {
@@ -870,8 +956,8 @@ public class ModouStore extends SQLiteOpenHelper {
         SQLiteStatement st = null;
         try {
             SQLiteDatabase db = getWritableDatabase();
-            st = db.compileStatement(
-                    "INSERT OR REPLACE INTO chapters (id, content, cachedAt) VALUES (?,?,?)");
+            st = db.compileStatement("INSERT OR REPLACE INTO chapters "
+                    + "(id, content, cachedAt, book_id, idx) VALUES (?,?,?,?,?)");
             db.beginTransactionNonExclusive();
             boolean ok = false;
             try {
@@ -881,6 +967,10 @@ public class ModouStore extends SQLiteOpenHelper {
                     st.bindString(1, chapterKey(bookId, startIndex + i));
                     st.bindString(2, h == null ? "" : h);
                     st.bindLong(3, cachedAt);
+                    // 两列直接写：索引 (book_id, idx) 于是对所有新章节都成立，
+                    // 且不依赖触发器再 UPDATE 一次
+                    st.bindString(4, bookId);
+                    st.bindLong(5, startIndex + i);
                     st.executeInsert();
                     n++;
                 }
@@ -948,7 +1038,7 @@ public class ModouStore extends SQLiteOpenHelper {
     }
 
     /** SQLite freelist 的空闲页字节数：删书/清缓存后不 VACUUM 就一直占着 */
-    public synchronized long dbFreeBytes() {
+    public long dbFreeBytes() {
         try {
             SQLiteDatabase db = getReadableDatabase();
             return pragmaLong(db, "PRAGMA freelist_count") * pragmaLong(db, "PRAGMA page_size");
@@ -958,7 +1048,7 @@ public class ModouStore extends SQLiteOpenHelper {
     }
 
     /** 当前库的页总数（含 freelist），用于判断真空比 */
-    public synchronized long dbPageBytes() {
+    public long dbPageBytes() {
         try {
             SQLiteDatabase db = getReadableDatabase();
             return pragmaLong(db, "PRAGMA page_count") * pragmaLong(db, "PRAGMA page_size");
@@ -1009,7 +1099,7 @@ public class ModouStore extends SQLiteOpenHelper {
     }
 
     /** 全部书 id；只读主键，不碰 json。 */
-    public synchronized Set<String> bookIdSet() {
+    public Set<String> bookIdSet() {
         Set<String> out = new HashSet<>();
         Cursor c = null;
         try {
@@ -1030,7 +1120,7 @@ public class ModouStore extends SQLiteOpenHelper {
      * chapters 里出现过的 bookId（主键最后一段是章号，前面的全是 bookId）。
      * 只读 id 列，千章一本书也只搬几 KB。
      */
-    public synchronized Set<String> chapterBookIdSet() {
+    public Set<String> chapterBookIdSet() {
         Set<String> out = new HashSet<>();
         Cursor c = null;
         try {
@@ -1068,7 +1158,7 @@ public class ModouStore extends SQLiteOpenHelper {
     }
 
     /** 孤儿章节总数（只读主键索引，不搬正文，几万章也很快） */
-    public synchronized int countOrphanChapters() {
+    public int countOrphanChapters() {
         int n = 0;
         for (long[] v : scanOrphanBooks().values()) n += (int) v[0];
         return n;
@@ -1177,12 +1267,45 @@ public class ModouStore extends SQLiteOpenHelper {
     }
 
     /**
+     * 某本书已经缓存了正文的章号集合（目录页给这些章打「已缓存」）。
+     *
+     * <p>只 SELECT 主键 id、按前缀范围扫：范围比较走主键索引，不会把每行几 KB 的
+     * 正文搬出来 —— 几千章的在线书也是毫秒级。章号从 id 尾部解析，不依赖 idx 列
+     * （老库的 idx 是后补的，可能为空）。
+     */
+    public synchronized java.util.HashSet<Integer> cachedChapterIndexes(String bookId) {
+        java.util.HashSet<Integer> out = new java.util.HashSet<>();
+        if (bookId == null || bookId.isEmpty()) return out;
+        final String lo = bookId + "||";
+        Cursor c = null;
+        try {
+            c = getReadableDatabase().rawQuery(
+                    "SELECT id FROM chapters WHERE id >= ? AND id < ?",
+                    new String[]{lo, lo + '\uffff'});
+            while (c.moveToNext()) {
+                String id = c.getString(0);
+                if (id == null || id.length() <= lo.length()) continue;
+                try {
+                    out.add(Integer.parseInt(id.substring(lo.length())));
+                } catch (NumberFormatException ignore) {
+                    /* 非本章号格式（理论上没有）：跳过 */
+                }
+            }
+        } catch (Exception ignore) {
+            /* 表空 / 库损坏：当作没有缓存，目录照常显示 */
+        } finally {
+            if (c != null) try { c.close(); } catch (Exception ignore) { }
+        }
+        return out;
+    }
+
+    /**
      * 取某章正文 HTML（未缓存返回 null）。
      *
      * 原生阅读页翻章时先查这里：命中就直接排版出屏，不再 evalJs 回网页侧；
      * 未命中（在线书源还没抓过的章）才回退 JS 的书源引擎去抓。
      */
-    public synchronized String chapterContent(String bookId, int index) {
+    public String chapterContent(String bookId, int index) {
         if (bookId == null || bookId.isEmpty()) return null;
         return readTextByKey("chapters", "content", chapterKey(bookId, index));
     }
@@ -1195,7 +1318,7 @@ public class ModouStore extends SQLiteOpenHelper {
      * OOM 杀掉 —— 用户看到的就是「转很久，闪一下回到书架」。这里给一个硬上限，
      * 宁可少显示后半章，也不要把整个阅读页内存撑爆。
      */
-    public synchronized String chapterContentCapped(String bookId, int index, int maxChars) {
+    public String chapterContentCapped(String bookId, int index, int maxChars) {
         if (bookId == null || bookId.isEmpty()) return null;
         return readTextByKey("chapters", "content", chapterKey(bookId, index), maxChars);
     }
@@ -1457,6 +1580,80 @@ public class ModouStore extends SQLiteOpenHelper {
             return db.delete("chapters", "id >= ? AND id < ?", new String[]{lo, lo + '\uffff'});
         } catch (Exception e) {
             return 0;
+        }
+    }
+
+    /**
+     * 按书统计正文缓存，占用最大的排前面（设置页「按书清理」用）。
+     *
+     * <p>返回 {@code String[]{bookId, 书名, sourceUrl, 字节数, 章数}}。
+     * 用 SQL 聚合而不是逐本 count：几千章的表，逐本查要扫很多遍。
+     * id 形如 {@code bookId||index}，substr 到第一个 '||' 就是归属书。
+     */
+    public List<String[]> topChapterCache(int limit) {
+        List<String[]> out = new ArrayList<>();
+        try {
+            SQLiteDatabase db = getReadableDatabase();
+            Cursor cur = db.rawQuery("SELECT substr(id,1,instr(id,'||')-1) AS bid,"
+                    + " SUM(length(content)) AS sz, COUNT(*) AS n"
+                    + " FROM chapters WHERE instr(id,'||')>0"
+                    + " GROUP BY bid ORDER BY sz DESC LIMIT ?",
+                    new String[]{String.valueOf(Math.max(1, limit))});
+            List<String[]> rows = new ArrayList<>();
+            try {
+                while (cur.moveToNext()) {
+                    rows.add(new String[]{cur.getString(0), "", "",
+                            String.valueOf(cur.getLong(1)), String.valueOf(cur.getInt(2))});
+                }
+            } finally {
+                cur.close();
+            }
+            for (String[] r : rows) {
+                String name = r[0];
+                String src = "";
+                Cursor b = db.rawQuery("SELECT name, lite FROM books WHERE id=?", new String[]{r[0]});
+                try {
+                    if (b.moveToFirst()) {
+                        String nm = b.getString(0);
+                        if (nm != null && !nm.isEmpty()) name = nm;
+                        String lite = b.getString(1);
+                        if (lite != null) {
+                            JSONObject l = new JSONObject(lite);
+                            src = l.optString("sourceUrl", "");
+                        }
+                    }
+                } catch (Exception ignore) {
+                    /* 书名/来源取不到不影响清理 */
+                } finally {
+                    b.close();
+                }
+                r[1] = name;
+                r[2] = src;
+                out.add(r);
+            }
+        } catch (Throwable t) {
+            Log.w("ModouStore", "topChapterCache failed", t);
+        }
+        return out;
+    }
+
+    /**
+     * 清掉一本书的目录快照（books.chapters），下次打开会重新拉取。
+     *
+     * <p>只对在线书有意义：本地书的目录来自扫描文件，清掉就真的空了。
+     * updatedAt 归零是为了让「1 小时 TTL」立刻失效，进书即重拉。
+     */
+    public synchronized boolean clearToc(String bookId) {
+        if (bookId == null || bookId.isEmpty()) return false;
+        try {
+            String s = get("books", bookId);
+            if (s == null) return false;
+            JSONObject o = new JSONObject(s);
+            o.put("chapters", new JSONArray());
+            o.put("updatedAt", 0L);
+            return put("books", o.toString());
+        } catch (Exception e) {
+            return false;
         }
     }
 

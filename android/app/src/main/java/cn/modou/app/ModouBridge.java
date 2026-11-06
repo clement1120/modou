@@ -53,42 +53,6 @@ public class ModouBridge {
 
     /* ---------- 原生界面（书架 / 设置）：渐进式原生化的入口 ---------- */
 
-    /** 从网页版进入原生书架 */
-    @JavascriptInterface
-    public void openNativeShelf() {
-        activity.runOnUiThread(() -> ShelfActivity.launch(activity));
-    }
-
-    /** 从网页版进入原生设置 */
-    @JavascriptInterface
-    public void openNativeSettings() {
-        activity.runOnUiThread(() -> SettingsActivity.launch(activity));
-    }
-
-    /** 从网页版进入原生搜书（走书源服务，不依赖网页阅读页） */
-    @JavascriptInterface
-    public void openNativeSearch() {
-        activity.runOnUiThread(() -> SearchActivity.launch(activity));
-    }
-
-    /** 从网页版进入原生本地导入 */
-    @JavascriptInterface
-    public void openNativeImport() {
-        activity.runOnUiThread(() -> ImportActivity.launch(activity));
-    }
-
-    /** 从网页版进入原生替换规则 */
-    @JavascriptInterface
-    public void openNativeRules() {
-        activity.runOnUiThread(() -> RulesActivity.launch(activity));
-    }
-
-    /** 从网页版进入原生书源管理 */
-    @JavascriptInterface
-    public void openNativeSources() {
-        activity.runOnUiThread(() -> SourcesActivity.launch(activity));
-    }
-
     /** 是否「启动即进原生书架」（原生设置页里可关，避免进不去网页版） */
     @JavascriptInterface
     public boolean nativeStart() {
@@ -236,19 +200,6 @@ public class ModouBridge {
     }
 
     /* ---------- 原生阅读页（实验） ---------- */
-
-    /**
-     * 打开原生阅读页：只把正文这一屏交给本地绘制，其余功能仍在网页版。
-     *
-     * payload 是前端拼好的 JSON（书/章/目录/正文/排版），原生页拿到就能立刻出第一屏；
-     * 后续换章由原生反向调用 window.__modouNativeChapter(index) 按需取。
-     */
-    @JavascriptInterface
-    public void openNativeReader(String payloadJson) {
-        if (activity instanceof MainActivity) {
-            ((MainActivity) activity).openNativeReader(this, payloadJson);
-        }
-    }
 
     /** 原生页请求的章节回来了（由前端拿到正文后回传） */
     @JavascriptInterface

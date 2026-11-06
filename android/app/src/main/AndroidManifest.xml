@@ -3,6 +3,14 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- setPersisted(true)：重启后自动更新任务仍留在系统队列里（系统自己存，无需收广播） -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 断网判断：没网时不重建书源 WebView（否则每 8 秒重建一次，纯烧电） -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 听书：前台服务保活 + 通知栏/锁屏媒体控制（Android 13+ 还要运行时通知权限） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!--
         「一键扫描」要读手机里的 txt/epub：
@@ -38,6 +46,7 @@
     </queries>
 
     <application
+        android:name=".ModouApp"
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -46,6 +55,12 @@
         android:hardwareAccelerated="true"
         android:allowBackup="true"
         android:supportsRtl="true">
+
+        <!-- 听书前台服务：只承载 MediaSession 与通知，TTS 逻辑仍在阅读页 -->
+        <service
+            android:name=".TtsService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <activity
             android:name=".MainActivity"
@@ -70,16 +85,27 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/epub+zip" />
             </intent-filter>
-            <!-- 部分文件管理器把 TXT/EPUB 报成 octet-stream，按扩展名再兜一次 -->
+            <!--
+                部分文件管理器把 TXT/EPUB 报成 octet-stream，按扩展名再兜一次。
+                必须显式限定 scheme="file"：content:// 的 pathPattern 在国产 ROM 上不可靠，
+                会让「application/octet-stream」变成万能兜底，把 .apk 也认成可打开目标
+                （文件管理器里就会出现「轻阅」这一项）。
+            -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="application/octet-stream" android:pathPattern=".*\\.txt" />
+                <data
+                    android:scheme="file"
+                    android:mimeType="application/octet-stream"
+                    android:pathPattern=".*\\.txt" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="application/octet-stream" android:pathPattern=".*\\.epub" />
+                <data
+                    android:scheme="file"
+                    android:mimeType="application/octet-stream"
+                    android:pathPattern=".*\\.epub" />
             </intent-filter>
         </activity>
 
@@ -118,6 +144,22 @@
             android:theme="@style/Theme.Modou"
             android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
 
+        <!-- 主题外观画廊：沉浸式三套设计语言选择页（0.9.160）。
+             独立 Activity 是为了让「确认切换」后宿主 onResume 走 syncTheme 整页重建。 -->
+        <activity
+            android:name=".ThemeGalleryActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Modou"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+
+        <!-- 阅读纸张画廊：沉浸式四档纸张选择页（0.9.161）。
+             从阅读页用 startActivityForResult 打开，结果带回纸张 id 走 applyTheme。 -->
+        <activity
+            android:name=".PaperGalleryActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Modou"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+
         <activity
             android:name=".SearchActivity"
             android:exported="false"
@@ -150,5 +192,14 @@
             android:theme="@style/Theme.Modou"
             android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|screenSize|keyboardHidden|uiMode" />
+
+        <!--
+            书架自动更新：一个任务刷全部在线书，替代「一本书一个闹钟」。
+            BIND_JOB_SERVICE 是 JobService 的硬性要求：少了它系统直接拒绝调度（任务静默不跑）。
+        -->
+        <service
+            android:name=".ShelfUpdateJob"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
     </application>
 </manifest>
