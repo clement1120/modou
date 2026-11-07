@@ -424,6 +424,9 @@ final class NativePageView extends View {
     private int hfBookTotal = 0;
     private int batteryPct = -1;
     private final Paint hfPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    /** 0.9.181：页脚状态行的矢量小图标（时钟 / 电池），笔触与文字同色、随深浅调 alpha */
+    private final Paint hfGlyph = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final RectF hfRf = new RectF();
 
     /** 同章翻页动画：dir=±1，dx 从 ±width 回到 0 */
     private int animDir;
@@ -489,8 +492,10 @@ final class NativePageView extends View {
         hfPaint.setTextSize(dp(11));
         try {
             hfPaint.setLetterSpacing(0.03f);
+            // 等宽数字：页码 / 时间 / 电量在翻页时不会因字形宽度变化而跳动
+            hfPaint.setFontFeatureSettings("tnum");
         } catch (Throwable ignored) {
-            /* 旧系统没有字距 */
+            /* 旧系统没有字距 / 字体特性 */
         }
     }
 
@@ -3695,7 +3700,8 @@ final class NativePageView extends View {
     private void drawHeadFoot(Canvas c) {
         if (headMode == 0 && footMask == 0) return;
         hfPaint.setColor(theme.sub);
-        hfPaint.setAlpha(179); // 0.7，与网页版 opacity:.7 一致
+        // 深浅自适应：夜间 0.7 的灰字在深底上偏亮，压到 0.65；浅色维持 0.7
+        hfPaint.setAlpha(theme.dark ? 0xA6 : 0xB3);
         // 页眉：居中一行（章节名 / 书名 / 书名 · 章节名）
         if (headMode != 0) {
             String t = headMode == 1 ? hfChapter
@@ -3727,18 +3733,27 @@ final class NativePageView extends View {
             // 位置类（页码/剩余章数）靠左，状态类（时间/电量/进度）靠右 —— 与网页版一致
             List<String> left = new ArrayList<>();
             List<String> right = new ArrayList<>();
+            // 右侧每段的图标：0 = 纯文本 / 1 = 时钟 / 2 = 电池
+            List<Integer> rightKind = new ArrayList<>();
             if ((footMask & 1) != 0) left.add((pg + 1) + " / " + n);
             if ((footMask & 32) != 0 && hfBookTotal > 0) {
                 int rest = hfBookTotal - 1 - hfBookIndex;
                 left.add(rest > 0 ? "剩 " + rest + " 章" : "末章");
             }
-            if ((footMask & 2) != 0) right.add(nowHM());
-            if ((footMask & 4) != 0 && batteryPct >= 0) right.add(batteryPct + "%");
+            if ((footMask & 2) != 0) { right.add(nowHM()); rightKind.add(1); }
+            if ((footMask & 4) != 0 && batteryPct >= 0) { right.add(batteryPct + "%"); rightKind.add(2); }
             if ((footMask & 8) != 0 && hfBookTotal > 0) {
                 right.add("全书 " + Math.round(((hfBookIndex + (pg + 1f) / n) / hfBookTotal) * 100) + "%");
+                rightKind.add(0);
             }
-            if ((footMask & 16) != 0) right.add("本章 " + Math.round((pg + 1f) / n * 100) + "%");
-            if (left.isEmpty() && right.size() > 1) left.add(right.remove(0));
+            if ((footMask & 16) != 0) {
+                right.add("本章 " + Math.round((pg + 1f) / n * 100) + "%");
+                rightKind.add(0);
+            }
+            if (left.isEmpty() && right.size() > 1) {
+                left.add(right.remove(0));
+                rightKind.remove(0);
+            }
             // 页脚钉底：距屏底约 10dp（基线），不随「下边距」变化。
             // 宿主没传带高时回退旧的 padB 反推（兼容滚动模式等未接线路径）
             float y;
@@ -3754,25 +3769,98 @@ final class NativePageView extends View {
             } else {
                 y = getHeight() - padB + dp(15);
             }
+            // 右侧先算总宽（含图标与段间距）：左段据此让位，绝不压到状态类上
+            final float segGap = dp(9);
+            final float iconW = dp(10);
+            final float iconH = dp(10);
+            final float iconGap = dp(3.5f);
+            float rw = 0;
+            for (int i = 0; i < right.size(); i++) {
+                rw += hfPaint.measureText(right.get(i));
+                if (rightKind.get(i) != 0) rw += iconW + iconGap;
+                if (i > 0) rw += segGap;
+            }
             if (!left.isEmpty()) {
                 hfPaint.setTextAlign(Paint.Align.LEFT);
-                String ls = join(left);
-                // 左右都是多选、且一行放不下时，左边（位置类）让位：截断加省略号，
-                // 绝不压到右边的状态类上。之前是两边各画各的，长串直接叠在一起。
+                StringBuilder lb = new StringBuilder();
+                for (int i = 0; i < left.size(); i++) {
+                    if (i > 0) lb.append("    ");   // 位置段之间用空格拉开，不再画「·」分点
+                    lb.append(left.get(i));
+                }
+                String ls = lb.toString();
+                // 一行放不下时左边（位置类）让位：截断加省略号，绝不压到右边的状态类上
                 if (!right.isEmpty()) {
-                    String rs = join(right);
-                    float avail = getWidth() - padL - padR;
-                    float lw = hfPaint.measureText(ls);
-                    float rw = hfPaint.measureText(rs);
-                    if (lw + rw + dp(10) > avail) {
-                        ls = fit(ls, Math.max((int) dp(40), (int) (avail - rw - dp(10))));
+                    float avail = getWidth() - padL - padR - rw - dp(12);
+                    if (hfPaint.measureText(ls) > avail) {
+                        ls = fit(ls, Math.max((int) dp(40), (int) avail));
                     }
                 }
                 c.drawText(ls, padL, y, hfPaint);
             }
             if (!right.isEmpty()) {
-                hfPaint.setTextAlign(Paint.Align.RIGHT);
-                c.drawText(join(right), getWidth() - padR, y, hfPaint);
+                hfPaint.setTextAlign(Paint.Align.LEFT);
+                float x = getWidth() - padR - rw;
+                // 图标垂直居中于当前字号的行盒
+                Paint.FontMetrics fmm = hfPaint.getFontMetrics();
+                float glyphTop = y + fmm.ascent + (fmm.descent - fmm.ascent) / 2f - iconH / 2f;
+                for (int i = 0; i < right.size(); i++) {
+                    int k = rightKind.get(i);
+                    if (k == 1) {
+                        drawClockGlyph(c, x, glyphTop, iconW, iconH);
+                        x += iconW + iconGap;
+                    } else if (k == 2) {
+                        drawBatteryGlyph(c, x, glyphTop, iconW, iconH);
+                        x += iconW + iconGap;
+                    }
+                    String t = right.get(i);
+                    c.drawText(t, x, y, hfPaint);
+                    x += hfPaint.measureText(t);
+                    if (i < right.size() - 1) x += segGap;
+                }
+            }
+        }
+    }
+
+    /** 页脚时钟：细线圆 + 时针/分针，1.1dp 圆头笔触，与 11sp 文字同一视觉重量 */
+    private void drawClockGlyph(Canvas c, float x, float y, float w, float h) {
+        hfGlyph.setStyle(Paint.Style.STROKE);
+        hfGlyph.setStrokeCap(Paint.Cap.ROUND);
+        hfGlyph.setStrokeWidth(Math.max(1f, dp(1.1f)));
+        hfGlyph.setColor(theme.sub);
+        hfGlyph.setAlpha(hfPaint.getAlpha());
+        float r = Math.min(w, h) / 2f - hfGlyph.getStrokeWidth() / 2f;
+        float cx = x + w / 2f, cy = y + h / 2f;
+        c.drawCircle(cx, cy, r, hfGlyph);
+        c.drawLine(cx, cy, cx, cy - r * 0.55f, hfGlyph);
+        c.drawLine(cx, cy, cx + r * 0.42f, cy + r * 0.20f, hfGlyph);
+    }
+
+    /** 页脚电池：外框 + 正极 + 按电量填充的内条，比裸「67%」更接近系统状态栏 */
+    private void drawBatteryGlyph(Canvas c, float x, float y, float w, float h) {
+        float sw = Math.max(1f, dp(1f));
+        hfGlyph.setStyle(Paint.Style.STROKE);
+        hfGlyph.setStrokeCap(Paint.Cap.BUTT);
+        hfGlyph.setStrokeWidth(sw);
+        hfGlyph.setColor(theme.sub);
+        hfGlyph.setAlpha(hfPaint.getAlpha());
+        float bodyW = w * 0.84f, bodyH = h * 0.58f;
+        float left = x, top = y + (h - bodyH) / 2f;
+        hfRf.set(left, top, left + bodyW, top + bodyH);
+        float rr = bodyH * 0.30f;
+        c.drawRoundRect(hfRf, rr, rr, hfGlyph);
+        // 正极小凸起
+        hfGlyph.setStyle(Paint.Style.FILL);
+        float capW = Math.max(1f, w * 0.07f);
+        float capTop = top + bodyH * 0.28f, capBot = top + bodyH * 0.72f;
+        c.drawRoundRect(left + bodyW + sw * 0.6f, capTop,
+                left + bodyW + sw * 0.6f + capW, capBot, capW * 0.4f, capW * 0.4f, hfGlyph);
+        // 电量填充
+        if (batteryPct > 0) {
+            float pad = Math.max(sw, dp(1.2f));
+            float fw = Math.max(0f, (bodyW - pad * 2) * Math.min(1f, batteryPct / 100f));
+            if (fw > 0.5f) {
+                hfRf.set(left + pad, top + pad, left + pad + fw, top + bodyH - pad);
+                c.drawRoundRect(hfRf, rr * 0.55f, rr * 0.55f, hfGlyph);
             }
         }
     }

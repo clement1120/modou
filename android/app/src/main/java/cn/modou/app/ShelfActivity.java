@@ -126,6 +126,8 @@ public class ShelfActivity extends Activity {
      * 浮岛语言（墨读）只用 pager，底栏另开独立窗口。
      */
     private FrameLayout stage;
+    /** 0.9.183：M3 Expressive 专属的右下角 FAB（搜索）；iOS / 墨读 为 null。 */
+    private View shelfFab;
     /**
      * 底栏独立窗口（0.9.138）：玻璃必须待在一个 translucent + floating 窗口里，
      * 系统在合成时才会把它下面的书架画面实时卷积。挂在 Activity 内容树里的 View
@@ -308,16 +310,12 @@ public class ShelfActivity extends Activity {
             getWindow().setAttributes(wlp);
         }
         root.setOnApplyWindowInsetsListener((v, ins) -> {
-            int l = 0, r = 0, t = baseTopPad, btm = baseBotPad;
-            if (android.os.Build.VERSION.SDK_INT >= 28) {
-                android.view.DisplayCutout dc = ins.getDisplayCutout();
-                if (dc != null) {
-                    l = dc.getSafeInsetLeft();
-                    r = dc.getSafeInsetRight();
-                    t = Math.max(t, dc.getSafeInsetTop());
-                    btm = Math.max(btm, dc.getSafeInsetBottom());
-                }
-            }
+            // 0.9.203：改用真实系统栏 insets（含三键/手势导航栏），不再只读挖孔 +
+            // 静态 navigation_bar_height；换算与 WebView 壳走同一个 helper。
+            int[] si = ModouUi.systemInsetsPx(this, ins);
+            int l = si[0], r = si[2];
+            int t = Math.max(baseTopPad, si[1]);
+            int btm = Math.max(baseBotPad, si[3]);
             if (v.getPaddingLeft() != l || v.getPaddingRight() != r
                     || v.getPaddingTop() != t || v.getPaddingBottom() != btm) {
                 v.setPadding(l, t, r, btm);
@@ -375,7 +373,9 @@ public class ShelfActivity extends Activity {
             f.addView(headBox);   // LayoutParams 由 buildHead() 设好
             shelfPane = f;
             shelfInsetPx = ModouUi.dp(this, 48) + ModouUi.dp(this, sg.shelfTitleBlockDp);
-            stickyTopPx = ModouUi.dp(this, 48);
+            // 吸顶头必须对齐到内容首行（让开 48dp 工具条 + 大标题块），否则会画在 y=48
+            // 压在大「书架」标题上，造成「本」字叠到标题右上角的重影。
+            stickyTopPx = shelfInsetPx;
         } else {
             LinearLayout s = new LinearLayout(this);
             s.setOrientation(LinearLayout.VERTICAL);
@@ -780,7 +780,9 @@ public class ShelfActivity extends Activity {
     }
 
     private int navBarPad() {
-        // 手势条/导航条高度：底部导航内容不能被它压住
+        // 0.9.203：优先读真实 insets（三键/手势切换会变），静态 dimen 仅作首帧兜底。
+        android.view.WindowInsets ins = getWindow().getDecorView().getRootWindowInsets();
+        if (ins != null) return ModouUi.systemInsetsPx(this, ins)[3];
         int id = getResources().getIdentifier("navigation_bar_height", "dimen", "android");
         return id > 0 ? getResources().getDimensionPixelSize(id) : 0;
     }
@@ -956,6 +958,10 @@ public class ShelfActivity extends Activity {
             fill.setStyle(android.graphics.Paint.Style.FILL);
             fill.setColor(baseColor);
             canvas.drawRect(rect, fill);
+            // 0.9.181：内容树里的 View 拿不到实时模糊，单层 51% 基色会让封面/书名直接透过
+            // 标签，看着像导航栏坏掉。把基色叠三遍（0.51 → 约 0.88）模拟 blur 的遮蔽力。
+            canvas.drawRect(rect, fill);
+            canvas.drawRect(rect, fill);
             if (sheenGrad != null) {
                 sheen.setShader(sheenGrad);
                 canvas.drawRect(rect, sheen);
@@ -1005,6 +1011,9 @@ public class ShelfActivity extends Activity {
                 stage.addView(navDockWrap,
                         (FrameLayout.LayoutParams) navDockWrap.getLayoutParams());
             }
+            // M3 Expressive：右下角 extended FAB（搜索）。iOS / 墨读 不加 —— 这是三套语言在
+            // 书架首屏上「只有自己有」的结构件，不是换色。
+            if (s.material == DesignSpec.Material.TONAL) buildShelfFab(s);
             return;   // 贴底 View 随内容树走生命周期，不需要 show/hide/dismiss
         }
         if (!ModouGlass.available(this)) return;
@@ -1025,7 +1034,11 @@ public class ShelfActivity extends Activity {
     private int dockFoot() {
         // 四处共用 ModouUi.dockFootPx：书架、设置、书源、规则，底部留白必须是同一个数，
         // 否则滚到底时只有一个页面多出一条空白（就是「底部那块灰带」）。
-        return ModouUi.dockFootPx(this);
+        int f = ModouUi.dockFootPx(this);
+        // M3 的搜索 FAB 浮在内容之上，底部再多留一个 FAB 的高度，
+        // 滚到底时最后一排书名不会被 FAB 压住。
+        if (ui.spec.material == DesignSpec.Material.TONAL) f += ModouUi.dp(this, 72);
+        return f;
     }
 
     /**
@@ -1051,7 +1064,10 @@ public class ShelfActivity extends Activity {
         android.graphics.drawable.RippleDrawable rip = new android.graphics.drawable.RippleDrawable(
                 android.content.res.ColorStateList.valueOf(ModouUi.alpha(ui.text, 0x1E)),
                 new android.graphics.drawable.ColorDrawable(0x00000000), mask);
-        it.setBackground(rip);
+        it.setBackground(ui.spec.material == DesignSpec.Material.GLASS ? rip
+                : ModouUi.pressOverlay(this, 17));
+        it.setContentDescription(label);
+        it.setSelected(selected);
 
         ImageView iv = new ImageView(this);
         // 图标尺寸按语言：墨读 21 / M3 24 / iOS 25。首帧就按选中态上色，不等 navRefresh。
@@ -1136,8 +1152,15 @@ public class ShelfActivity extends Activity {
                 nd.setTint(on ? navOn : navOff);
                 iv.setImageDrawable(nd);
                 View ind = i < navIndicators.size() ? navIndicators.get(i) : null;
-                if (ind != null) ind.animate().alpha(on ? 1f : 0f)
-                        .setDuration(sp.durShort).start();
+                if (ind != null) {
+                    ind.animate().cancel();
+                    if (on && ModouMotion.scale(this) > 0f) ind.setScaleX(0.62f);
+                    ind.animate().alpha(on ? 1f : 0f).scaleX(on ? 1f : 0.82f)
+                            .setDuration(ModouMotion.duration(this, sp.durShort))
+                            .setInterpolator(ModouMotion.standard(this)).start();
+                    iv.animate().scaleX(on ? 1.06f : 1f).scaleY(on ? 1.06f : 1f)
+                            .setDuration(ModouMotion.duration(this, sp.durShort)).start();
+                }
             } else {
                 // 墨读 / iOS：只改现有 drawable 的 tint，不换图形
                 android.graphics.drawable.Drawable d = iv.getDrawable();
@@ -1156,6 +1179,34 @@ public class ShelfActivity extends Activity {
             navLabels.get(i).setTypeface(on
                     ? android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
                     : android.graphics.Typeface.DEFAULT);
+            navItems.get(i).setSelected(on);
+        }
+        refreshShelfFab(idx);
+    }
+
+    /**
+     * M3 FAB 只在「书架」页出现：切到书源 / 规则 / 设置时收掉。
+     * iOS / 墨读 没有这个组件（shelfFab 为 null），直接跳过。
+     */
+    private void refreshShelfFab(int idx) {
+        if (shelfFab == null) return;
+        boolean show = idx == 0;
+        if (show && shelfFab.getVisibility() != View.VISIBLE) {
+            shelfFab.setVisibility(View.VISIBLE);
+            shelfFab.setAlpha(0f);
+            shelfFab.setScaleX(0.7f);
+            shelfFab.setScaleY(0.7f);
+            shelfFab.animate().alpha(1f).scaleX(1f).scaleY(1f)
+                    .setDuration(ModouMotion.duration(this, ui.spec.durMed))
+                    .setInterpolator(ModouMotion.standard(this)).start();
+        } else if (!show && shelfFab.getVisibility() == View.VISIBLE) {
+            shelfFab.animate().cancel();
+            shelfFab.animate().alpha(0f).scaleX(0.7f).scaleY(0.7f)
+                    .setDuration(ModouMotion.duration(this, ui.spec.durShort))
+                    .setInterpolator(ModouMotion.exit(this))
+                    .withEndAction(() -> {
+                        if (shelfFab != null) shelfFab.setVisibility(View.GONE);
+                    }).start();
         }
     }
 
@@ -1199,8 +1250,12 @@ public class ShelfActivity extends Activity {
         // 右上角两颗互不相连的圆形按钮：搜索 / 更多。
         // 之前是一只长条胶囊装着三枚图标，横在标题右边像一条白色担架；
         // ColorOS 的右上角是两颗各带圆底的独立圆钮。
-        h.addView(roundBtn(ModouGlyph.SEARCH, land ? 34 : 40,
-                v -> SearchActivity.launch(this)));
+        // 0.9.184：M3 的搜索入口是右下 FAB，顶栏再放一枚搜索钮就成了「一页两个搜索」。
+        // M3 顶栏只留「⋯」；墨读 / iOS 没有 FAB，搜索钮保留。
+        if (ui.spec.material != DesignSpec.Material.TONAL) {
+            h.addView(roundBtn(ModouGlyph.SEARCH, land ? 34 : 40,
+                    v -> SearchActivity.launch(this)));
+        }
         h.addView(roundBtn(ModouGlyph.MORE_V, land ? 34 : 40, v -> openMore(v)),
                 new LinearLayout.LayoutParams(ModouUi.dp(this, land ? 34 : 40),
                         ModouUi.dp(this, land ? 34 : 40)) {{
@@ -1304,7 +1359,82 @@ public class ShelfActivity extends Activity {
         slp.topMargin = ModouUi.dp(this, 6);
         block.addView(shelfSub, slp);
 
+        // iOS 26：大标题正下方挂全宽搜索框（UISearchBar 的 scroll-edge 形态）。
+        // M3 用右下 FAB、墨读用右上圆钮 —— 三套语言各有各的搜索入口位置与形态。
+        if (g.shelfHeaderStyle == 2) block.addView(buildShelfSearch());
+
         shelfTitleBlock = block;
+    }
+
+    /** iOS 大标题下的搜索框：systemFill 圆角矩形 + 放大镜 + 占位文案 */
+    private View buildShelfSearch() {
+        LinearLayout pill = new LinearLayout(this);
+        pill.setOrientation(LinearLayout.HORIZONTAL);
+        pill.setGravity(Gravity.CENTER_VERTICAL);
+        pill.setPadding(ModouUi.dp(this, 12), 0, ModouUi.dp(this, 12), 0);
+        android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+        // 0.9.204：sysFill3 的灰实心块太重，换更淡的 sysFill2、圆角 12→10。
+        bg.setColor(ui.spec.sysFill2 != 0 ? ui.spec.sysFill2 : ModouUi.alpha(ui.text, 0x10));
+        bg.setCornerRadius(ModouUi.dp(this, 10));
+        pill.setBackground(bg);
+        ImageView ic = new ImageView(this);
+        ic.setImageDrawable(new ModouGlyph(ModouGlyph.SEARCH, ui.sub,
+                ModouUi.dp(this, 17), ModouUi.dp(this, 1.7f)));
+        pill.addView(ic, new LinearLayout.LayoutParams(
+                ModouUi.dp(this, 17), ModouUi.dp(this, 17)));
+        TextView hint = ModouUi.tv(this, "搜索书名、作者", 13.5f, ui.sub);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = ModouUi.dp(this, 8);
+        pill.addView(hint, lp);
+        pill.setContentDescription("搜索");
+        pill.setOnClickListener(v -> SearchActivity.launch(this));
+        ModouUi.expandTouch(pill, 48);
+        LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ModouUi.dp(this, 36));
+        plp.topMargin = ModouUi.dp(this, 8);
+        pill.setLayoutParams(plp);
+        return pill;
+    }
+
+    /** M3 Expressive 右下角 extended FAB：主容器色 + 图标 + 文案，56dp 高 */
+    private void buildShelfFab(DesignSpec s) {
+        if (shelfFab != null || stage == null) return;
+        LinearLayout fab = new LinearLayout(this);
+        fab.setOrientation(LinearLayout.HORIZONTAL);
+        fab.setGravity(Gravity.CENTER);
+        // 0.9.204：从带「搜索」文字的 extended FAB 收成 56dp 标准圆 FAB。
+        // 亮蓝实底面积减少约六成、投影 6→2dp，Expressive 的悬浮形状保留，
+        // 但不再是一整块高饱和色压在封面右下角。primaryContainer 曾试过、
+        // 实测对比度不够，故主色实底不动，只缩面积。
+        fab.setPadding(0, 0, 0, 0);
+        android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
+        bg.setColor(s.accent);
+        bg.setCornerRadius(ModouUi.dp(this, 28));
+        fab.setBackground(bg);
+        fab.setElevation(ModouUi.dp(this, 2));
+        ImageView ic = new ImageView(this);
+        ic.setImageDrawable(new ModouGlyph(ModouGlyph.SEARCH, s.onAccent,
+                ModouUi.dp(this, 20), ModouUi.dp(this, 1.8f)));
+        fab.addView(ic, new LinearLayout.LayoutParams(
+                ModouUi.dp(this, 20), ModouUi.dp(this, 20)));
+        fab.setContentDescription("搜索");
+        fab.setOnClickListener(v -> SearchActivity.launch(this));
+        ModouMotion.press(fab, 0.96f);
+        FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(
+                ModouUi.dp(this, 56), ModouUi.dp(this, 56),
+                Gravity.BOTTOM | Gravity.END);
+        flp.rightMargin = ModouUi.dp(this, 18);
+        flp.bottomMargin = ModouUi.dp(this, s.navHeightDp + 18);
+        stage.addView(fab, flp);
+        shelfFab = fab;
+        // 入场：60% 弹到 100%，Expressive 的蓄力感
+        fab.setScaleX(0.6f);
+        fab.setScaleY(0.6f);
+        fab.setAlpha(0f);
+        fab.animate().scaleX(1f).scaleY(1f).alpha(1f)
+                .setDuration(ModouMotion.duration(this, 320))
+                .setInterpolator(ModouMotion.standard(this)).start();
     }
 
     /**
@@ -1319,7 +1449,8 @@ public class ShelfActivity extends Activity {
      */
     private View roundBtn(int glyph, int boxDp, View.OnClickListener c) {
         ImageView iv = ModouUi.topBtn(this, glyph, boxDp, c);
-        return ModouFrost.wrap(iv, 999);
+        return ui.spec.material == DesignSpec.Material.GLASS
+                ? ModouFrost.wrap(iv, 999) : iv;
     }
 
     /** 圆形图标按钮：38dp 热区、21dp 图标、淡底反馈 */
@@ -2166,7 +2297,8 @@ public class ShelfActivity extends Activity {
                         ? (HistHolder) cv.getTag() : newHistRow();
                 JSONObject b = rows.get(i - 1);
                 JSONObject p = prog.get(b.optString("id", ""));
-                CoverLoader.load(h.cover, b.optString("coverUrl", ""), b.optString("name", ""));
+                CoverLoader.load(h.cover, b.optString("coverUrl", ""), b.optString("name", ""),
+                        b.optString("author", ""), 0f);
                 h.name.setText(b.optString("name", ""));
                 int idx = p == null ? 0 : p.optInt("index", 0);
                 h.sub.setText("读到第 " + (idx + 1) + " 章");
@@ -2461,13 +2593,16 @@ public class ShelfActivity extends Activity {
 
         final int cols = gridCols();
         final List<ShelfRow> rowsData = new ArrayList<>();
-        for (String g : orderedGroups(inGroup)) {
+        final List<String> grps = orderedGroups(inGroup);
+        // 单分组时不再渲染列表分组头：大标题副标题已承载计数，避免「24本」出现两处。
+        final boolean singleGroup = grps.size() <= 1;
+        for (String g : grps) {
             List<JSONObject> sec = new ArrayList<>();
             for (JSONObject b : inGroup) {
                 if (g.equals(b.optString("group", DEF_GROUP))) sec.add(b);
             }
             if (sec.isEmpty()) continue;
-            rowsData.add(ShelfRow.header(g, g + "  ·  " + sec.size() + " 本"));
+            if (!singleGroup) rowsData.add(ShelfRow.header(g, g + "  ·  " + sec.size() + " 本"));
             for (JSONObject b : sec) rowsData.add(ShelfRow.book(g, b));
         }
 
@@ -2489,7 +2624,7 @@ public class ShelfActivity extends Activity {
         rv.setClipToPadding(false);
         rv.setPadding(0, 0, 0, dockFoot());
         rv.setBackgroundColor(Color.TRANSPARENT);
-        final int gap = ModouUi.dp(this, 14);
+        final int gap = ModouUi.dp(this, 12);
         rv.addItemDecoration(new androidx.recyclerview.widget.RecyclerView.ItemDecoration() {
             @Override public void getItemOffsets(android.graphics.Rect out, View v,
                                                  androidx.recyclerview.widget.RecyclerView parent,
@@ -2504,14 +2639,15 @@ public class ShelfActivity extends Activity {
                         v.getLayoutParams()).getSpanIndex();
                 out.left = col * gap / fCols;
                 out.right = gap - (col + 1) * gap / fCols;
-                out.bottom = ModouUi.dp(ShelfActivity.this, 26);
+                out.bottom = ModouUi.dp(ShelfActivity.this, 22);
             }
         });
         ShelfAdapter ad = new ShelfAdapter();
         ad.coverH = coverHFor(cols);
         rv.setAdapter(ad);
         ad.submit(rowsData);
-        rv.addItemDecoration(new StickyGroupHeader(ad.data));
+        // 单分组不挂吸顶头：列表里已无分组头行，且大标题副标题已显示计数，避免重复。
+        if (!singleGroup) rv.addItemDecoration(new StickyGroupHeader(ad.data));
 
         lastScroller = rv;
         lastScrollerKey = paneKey();
@@ -2638,7 +2774,7 @@ public class ShelfActivity extends Activity {
         card.setOrientation(LinearLayout.HORIZONTAL);
         card.setGravity(Gravity.CENTER_VERTICAL);
         card.setBackground(ModouUi.squircle(this, ui.card, ui.spec.cornerCard));
-        card.setElevation(ModouUi.dp(this, 1));
+        card.setElevation(ModouUi.dp(this, ui.spec.cardElevationDp));
         card.setPadding(ModouUi.dp(this, 10), ModouUi.dp(this, 10),
                 ModouUi.dp(this, 12), ModouUi.dp(this, 10));
 
@@ -2656,8 +2792,10 @@ public class ShelfActivity extends Activity {
 
         LinearLayout info = new LinearLayout(this);
         info.setOrientation(LinearLayout.VERTICAL);
-        h.name = ModouUi.tv(this, "", 14, ui.text);
-        h.name.setTypeface(Typeface.SERIF, Typeface.BOLD);
+        h.name = ModouUi.tv(this, "", ui.spec.material == DesignSpec.Material.GLASS ? 14 : 16, ui.text);
+        h.name.setTypeface(ui.spec.material == DesignSpec.Material.GLASS
+                ? Typeface.SERIF : Typeface.create("sans-serif-medium", Typeface.NORMAL),
+                ui.spec.material == DesignSpec.Material.GLASS ? Typeface.BOLD : Typeface.NORMAL);
         h.name.setSingleLine(true);
         h.name.setEllipsize(TextUtils.TruncateAt.END);
         info.addView(h.name);
@@ -2697,9 +2835,11 @@ public class ShelfActivity extends Activity {
         cardMask.setColor(0xFFFFFFFF);
         cardMask.setCornerRadius(ModouUi.dp(this, 14));
         int ripColor = ModouUi.isDark(this) ? 0x1FFFFFFF : 0x14000000;
-        l.setBackground(new android.graphics.drawable.RippleDrawable(
-                android.content.res.ColorStateList.valueOf(ripColor), null, cardMask));
-        final float cardR = ModouUi.dp(this, 14);
+        l.setBackground(ui.spec.material == DesignSpec.Material.GLASS
+                ? new android.graphics.drawable.RippleDrawable(
+                        android.content.res.ColorStateList.valueOf(ripColor), null, cardMask)
+                : ModouUi.pressOverlay(this, ui.spec.cornerCard));
+        final float cardR = ModouUi.dp(this, ui.spec.cornerCard);
         l.setOutlineProvider(new android.view.ViewOutlineProvider() {
             @Override public void getOutline(View v, android.graphics.Outline o) {
                 o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), cardR);
@@ -2729,15 +2869,20 @@ public class ShelfActivity extends Activity {
         FrameLayout cover = new FrameLayout(this);
         cover.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, coverH));
-        cover.setBackground(ModouUi.squircle(this, 0xFFD8CFBB, 14));
-        final float coverR = ModouUi.dp(this, 14);
+        float coverRadius = ui.spec.material == DesignSpec.Material.TONAL ? 16f
+                : ui.spec.material == DesignSpec.Material.LIQUID ? 12f : 14f;
+        cover.setBackground(ModouUi.squircle(this, 0xFFD8CFBB, coverRadius,
+                ModouUi.alpha(ui.text, 0x18), 1f));
+        final float coverR = ModouUi.dp(this, coverRadius);
         cover.setOutlineProvider(new android.view.ViewOutlineProvider() {
             @Override public void getOutline(View v, android.graphics.Outline o) {
                 o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), coverR);
             }
         });
         cover.setClipToOutline(true);
-        cover.setElevation(ModouUi.dp(this, 2));
+        cover.setElevation(ModouUi.dp(this,
+                ui.spec.material == DesignSpec.Material.TONAL ? 4
+                        : ui.spec.material == DesignSpec.Material.LIQUID ? 0 : 3));
 
         ImageView iv = new ImageView(this);
         iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -2747,27 +2892,32 @@ public class ShelfActivity extends Activity {
         sheen.setBackground(new ModouSheen());
         sheen.setClickable(false);
         sheen.setFocusable(false);
+        sheen.setVisibility(ui.spec.material == DesignSpec.Material.GLASS ? View.VISIBLE : View.GONE);
         cover.addView(sheen, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // 封面角标只回答「这本书从哪来」：本地导入 vs 在线书源
-        TextView badge = ModouUi.tv(this, "在线", 9.5f, 0xFFFFFFFF);
-        badge.setTypeface(badge.getTypeface(), Typeface.BOLD);
-        badge.setPadding(ModouUi.dp(this, 6), ModouUi.dp(this, 3),
-                ModouUi.dp(this, 6), ModouUi.dp(this, 3));
-        // 角标背景骨架只建一次：bind 时仅改颜色，不再每行 new 三个 drawable
-        float rr = ModouUi.dp(this, 999);
-        float[] radii = new float[]{rr, rr, 0, 0, 0, 0, rr, rr};
+        // 0.9.181：描边必须画在封面图「之上」——背景 drawable 的 stroke 会被全尺寸的
+        // ImageView 整个盖住（之前那圈描边等于没生效），故单独盖一层透明环。
+        View ring = new View(this);
+        android.graphics.drawable.GradientDrawable rg =
+                new android.graphics.drawable.GradientDrawable();
+        rg.setColor(0x00000000);
+        rg.setCornerRadius(ModouUi.dp(this, coverRadius));
+        rg.setStroke(Math.max(1, ModouUi.dp(this, 1)), ModouUi.alpha(ui.text, 0x1C));
+        ring.setBackground(rg);
+        ring.setClickable(false);
+        ring.setFocusable(false);
+        cover.addView(ring, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // 封面角标只回答「这本书从哪来」：极淡底 + 次级字色，不抢封面主视觉
+        TextView badge = ModouUi.tv(this, "在线", 9f, ui.sub);
+        badge.setPadding(ModouUi.dp(this, 5), ModouUi.dp(this, 2),
+                ModouUi.dp(this, 5), ModouUi.dp(this, 2));
+        // 角标背景骨架只建一次：bind 时仅改颜色，不再每行 new drawable
         h.badgeBg = new android.graphics.drawable.GradientDrawable();
-        h.badgeBg.setCornerRadii(radii);
-        h.badgeBg.setStroke(Math.max(1, ModouUi.dp(this, 1)), 0x40FFFFFF);
-        android.graphics.drawable.GradientDrawable badgeSheen =
-                new android.graphics.drawable.GradientDrawable(
-                        android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM,
-                        new int[]{0x38FFFFFF, 0x0DFFFFFF, 0x00FFFFFF});
-        badgeSheen.setCornerRadii(radii);
-        badge.setBackground(new android.graphics.drawable.LayerDrawable(
-                new android.graphics.drawable.Drawable[]{h.badgeBg, badgeSheen}));
+        h.badgeBg.setCornerRadius(ModouUi.dp(this, 4));
+        badge.setBackground(h.badgeBg);
         FrameLayout.LayoutParams bp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         bp.gravity = Gravity.TOP | Gravity.END;
@@ -2775,8 +2925,12 @@ public class ShelfActivity extends Activity {
         cover.addView(badge, bp);
         l.addView(cover);
 
-        TextView name = ModouUi.tv(this, "", 12.5f, ui.text);
-        name.setTypeface(Typeface.SERIF, Typeface.BOLD);
+        TextView name = ModouUi.tv(this, "",
+                ui.spec.material == DesignSpec.Material.TONAL ? 14f
+                        : ui.spec.material == DesignSpec.Material.LIQUID ? 13f : 12.5f, ui.text);
+        name.setTypeface(ui.spec.material == DesignSpec.Material.GLASS
+                ? Typeface.SERIF : Typeface.create("sans-serif-medium", Typeface.NORMAL),
+                ui.spec.material == DesignSpec.Material.GLASS ? Typeface.BOLD : Typeface.NORMAL);
         // 固定两行高度：一行书名的卡与两行的卡若各按内容撑高，下面进度行就一高一低
         name.setMinLines(2);
         name.setMaxLines(2);
@@ -2789,17 +2943,25 @@ public class ShelfActivity extends Activity {
         foot.setOrientation(LinearLayout.HORIZONTAL);
         foot.setGravity(Gravity.CENTER_VERTICAL);
         foot.setPadding(0, ModouUi.dp(this, 3), 0, 0);
-        TextView pv = ModouUi.tv(this, "", 10.5f, ui.sub);
+        boolean monoCard = ui.spec.lang == DesignSpec.Lang.MONOLITH;
+        TextView pv = ModouUi.tv(this, "", monoCard ? 11f : 10.5f,
+                monoCard ? (ui.spec.dark ? 0xFF9AA0B0 : 0xFF5A6070) : ui.sub);
         pv.setSingleLine(true);
         pv.setEllipsize(TextUtils.TruncateAt.END);
         foot.addView(pv, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView more = ModouUi.tv(this, "⋯", 15, ui.sub);
-        more.setGravity(Gravity.CENTER);
-        int ms = ModouUi.dp(this, 26);
+        ImageView more = new ImageView(this);
+        more.setImageDrawable(new ModouGlyph(ModouGlyph.MORE_H, ui.sub,
+                ModouUi.dp(this, 17), ModouUi.dp(this, 1.6f)));
+        more.setScaleType(ImageView.ScaleType.CENTER);
+        more.setContentDescription("书籍操作");
+        int ms = ModouUi.dp(this, 30);
         more.setLayoutParams(new LinearLayout.LayoutParams(ms, ms));
+        more.setBackground(ModouUi.pressOverlay(this, 17));
         more.setOnClickListener(x -> {
             if (h.book != null) cardMenu(h.book);
         });
+        ModouUi.expandTouch(more, 48);
+        ModouMotion.press(more);
         foot.addView(more);
         l.addView(foot);
 
@@ -2817,11 +2979,13 @@ public class ShelfActivity extends Activity {
         if (!(tag instanceof CardHolder) || b == null) return;
         CardHolder h = (CardHolder) tag;
         h.book = b;
-        CoverLoader.load(h.cover, b.optString("coverUrl", ""), b.optString("name", ""));
+        CoverLoader.load(h.cover, b.optString("coverUrl", ""), b.optString("name", ""),
+                        b.optString("author", ""), 0f);
         boolean local = "local://".equals(b.optString("sourceUrl", ""));
         h.badge.setText(local ? "本地" : "在线");
-        // 骨架在 newCard 建好，这里只换底色：滚动时零 drawable 分配
-        if (h.badgeBg != null) h.badgeBg.setColor(local ? 0x3D14171C : ModouUi.alpha(ui.accent, 0x59));
+        // 骨架在 newCard 建好，这里只换底色/字色：滚动时零 drawable 分配
+        if (h.badgeBg != null) h.badgeBg.setColor(ModouUi.alpha(ui.text, 0x0C));
+        h.badge.setTextColor(local ? ui.sub : ui.accent);
         h.name.setText(b.optString("name", ""));
         h.prog.setText(progressText(b));
         String bid = b.optString("id", "");
@@ -2886,7 +3050,8 @@ public class ShelfActivity extends Activity {
         ilp.bottomMargin = ModouUi.dp(this, 10);
         iv.setLayoutParams(ilp);
         iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        CoverLoader.load(iv, b.optString("coverUrl", ""), b.optString("name", ""));
+        CoverLoader.load(iv, b.optString("coverUrl", ""), b.optString("name", ""),
+                b.optString("author", ""), 0f);
         box.addView(iv);
 
         EditText name = ModouUi.input(this, "书名", b.optString("name", ""), 1);

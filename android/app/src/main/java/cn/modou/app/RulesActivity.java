@@ -11,7 +11,7 @@ import android.view.View;
 public class RulesActivity extends Activity {
 
     static void launch(Activity from) {
-        from.startActivity(new Intent(from, RulesActivity.class));
+        ModouTransition.push(from, new Intent(from, RulesActivity.class));
     }
 
     /**
@@ -21,13 +21,22 @@ public class RulesActivity extends Activity {
     static void launchAdd(Activity from, String pattern) {
         Intent i = new Intent(from, RulesActivity.class);
         i.putExtra("addPattern", pattern == null ? "" : pattern);
-        from.startActivity(i);
+        ModouTransition.push(from, i);
+    }
+
+    /** 统一返回转场：三套语言各自的 pop 动作（见 {@link ModouTransition}） */
+    @Override
+    public void finish() {
+        super.finish();
+        ModouTransition.back(this);
     }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         ModouUi.applyTheme(this);
         super.onCreate(savedInstanceState);
+        // 0.9.185：沉浸式（RulesPanel 自己用 statusBarPad() 让位）
+        ModouUi.edgeToEdge(this);
         RulesPanel panel = new RulesPanel(this);
         View pv = panel.view(false);
         setContentView(pv);

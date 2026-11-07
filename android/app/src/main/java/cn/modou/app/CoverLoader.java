@@ -4,10 +4,18 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.LinearGradient;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.Rect;
+import android.graphics.RectF;
+import android.graphics.Shader;
+import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.text.Layout;
+import android.text.StaticLayout;
+import android.text.TextPaint;
 import android.widget.ImageView;
 
 import java.io.File;
@@ -116,10 +124,19 @@ final class CoverLoader {
      * 滚动中且未命中缓存：挂到 pending，停稳后再下载。
      */
     static void load(ImageView iv, String url, String name) {
+        load(iv, url, name, "", 0f);
+    }
+
+    /** 极简·纪占位封面额外需要作者与进度；另外两套忽略这两个参数。 */
+    static void load(ImageView iv, String url, String name, String author, float progress) {
         if (iv == null) return;
         final String key = (url == null || url.isEmpty() ? "ph:" : url) + "|" + (name == null ? "" : name);
         iv.setTag(key);
-        iv.setImageDrawable(placeholder(name));
+        DesignSpec.Lang lang = DesignSpec.current(iv.getContext());
+        int accent = lang == DesignSpec.Lang.MONOLITH
+                ? DesignSpec.of(iv.getContext()).accent : 0;
+        iv.setImageDrawable(placeholder(name, author, progress,
+                ModouUi.isDark(iv.getContext()), lang, accent));
 
         if (url == null || url.isEmpty()) return;
         Bitmap cached = ImagePool.cover(key);
@@ -361,139 +378,242 @@ final class CoverLoader {
         return p;
     }
 
-    /** 书名散列出的底色：同一本书每次进来颜色一致 */
-    static int tintOf(String name) {
+    /** 无封面书占位底色：每套设计语言各一组低饱和、同色系的纸感色板，按书名哈希稳定取色。
+     *  同一本书每次一致；整墙封面的色相收在同一族里，不再「一册一色」地发噪。 */
+    private static final int[][] LIGHT_PALETTES = {
+            // 墨读：宣纸 / 米纸 / 淡碧 —— 纸墨同族，暖中性（比页面底略深，卡片要立得住）
+            {0xFFE6DCC8, 0xFFDED8C6, 0xFFD8E0DA, 0xFFE4D9C6, 0xFFD3DEDB, 0xFFEBE1CE},
+            // M3：tonal neutral surface，冷暖交替但压在同一明度带
+            {0xFFDED8D2, 0xFFDAD8DF, 0xFFD6DCD9, 0xFFE2DACF, 0xFFD8D9DE, 0xFFDEDCD6},
+            // iOS 27：systemFill 灰，几乎无色相，只留一点温度
+            {0xFFDCDCE2, 0xFFE0DCD5, 0xFFD8DEE3, 0xFFDEDADB, 0xFFDADBD9, 0xFFE4DFD6}
+    };
+    private static final int[][] DARK_PALETTES = {
+            {0xFF2E2A24, 0xFF2A2823, 0xFF262C29, 0xFF2E2922, 0xFF242B2A, 0xFF322C24},
+            {0xFF2B2A2D, 0xFF29282C, 0xFF272C2A, 0xFF2E2B28, 0xFF28292D, 0xFF2C2B29},
+            {0xFF2C2C2E, 0xFF2E2B28, 0xFF282B2E, 0xFF2C2A2B, 0xFF2A2B2A, 0xFF302D29}
+    };
+
+    static int tintOf(String name, boolean dark, DesignSpec.Lang lang) {
         String s = name == null ? "" : name;
-        int h = s.isEmpty() ? 0 : s.hashCode();
-        float hue = Math.abs(h % 360) / 360f;
-        float[] hsv = {hue, 0.28f, 0.82f};
-        return Color.HSVToColor(hsv);
+        // & 0x7FFFFFFF 而不是 Math.abs：Integer.MIN_VALUE 取绝对值仍是负数，会数组越界
+        int h = (s.isEmpty() ? 0 : s.hashCode()) & 0x7FFFFFFF;
+        int idx = lang == DesignSpec.Lang.MATERIAL ? 1 : lang == DesignSpec.Lang.MONOLITH ? 2 : 0;
+        int[] pal = (dark ? DARK_PALETTES : LIGHT_PALETTES)[idx];
+        return pal[h % pal.length];
     }
 
-    /** 占位：底色块 + 书名全名（自动换行铺排，放不下截断） */
-    static Drawable placeholder(String name) {
+    /** 占位：渐变底 + 书脊 + 首字水印（书名由卡片下方单独成行，封面内不再重复） */
+    static Drawable placeholder(String name, boolean dark, DesignSpec.Lang lang) {
+        return placeholder(name, "", 0f, dark, lang, 0);
+    }
+
+    /** 极简·纪走独立绘制：莫兰迪底 + 顶部短横线 + 居中书名 + 作者 + 底部进度条。 */
+    static Drawable placeholder(String name, String author, float progress,
+                                boolean dark, DesignSpec.Lang lang, int accent) {
+        if (lang == DesignSpec.Lang.MONOLITH) {
+            return new MonolithDrawable(name, author, accent, progress);
+        }
         String s = name == null ? "" : name.trim();
-        return new NameDrawable(tintOf(s), s.isEmpty() ? "书" : s);
+        return new NameDrawable(tintOf(s, dark, lang), s.isEmpty() ? "书" : s, dark);
     }
 
-    /** 画「色块 + 书名全名」的 Drawable：按可用宽度逐字折行，行数自适应字号 */
+    private static int lighten(int c, float amt) {
+        int a = (c >> 24) & 0xFF, r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+        r = (int) Math.min(255, r + (255 - r) * amt);
+        g = (int) Math.min(255, g + (255 - g) * amt);
+        b = (int) Math.min(255, b + (255 - b) * amt);
+        return (a << 24) | (r << 16) | (g << 8) | b;
+    }
+    private static String firstChar(String s) {
+        if (s == null || s.isEmpty()) return "书";
+        return String.valueOf(s.trim().charAt(0));
+    }
+
+    /** 无封面占位：渐变底 + 书脊 + 居中首字水印。
+     *  书脊是「这是一本书」的最短视觉暗示，比纯色块更立得住；书名由卡片下方承担，
+     *  封面内不再重复文字，避免和标题打架。 */
     private static final class NameDrawable extends Drawable {
         private final int bg;
-        private final String name;
-        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final String ch;
+        private final boolean dark;
+        private final Paint mono = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint gloss = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint spine = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint edge = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint.FontMetrics fm = new Paint.FontMetrics();
-
-        // 排版结果缓存在 onBoundsChange，draw() 里零分配（避免每帧 new + 正则折行）
         private final GradientDrawable gd = new GradientDrawable();
-        private List<String> lines = java.util.Collections.emptyList();
-        private float textSize = 0;
-        private float lineH = 0;
-        private float baseY = 0;
+        private final Path clip = new Path();
+        private final RectF rf = new RectF();
+        private float monoSize = 0;
+        private float corner = 0;
+        private float spineW = 0;
+        private float spineX = 0;
 
-        NameDrawable(int bg, String name) {
+        NameDrawable(int bg, String name, boolean dark) {
             this.bg = bg;
-            this.name = name;
-            p.setColor(0xE6FFFFFF);
-            p.setTextAlign(Paint.Align.CENTER);
-            gd.setColor(bg);
+            this.ch = firstChar(name);
+            this.dark = dark;
+            int top = lighten(bg, 0.18f);
+            gd.setOrientation(android.graphics.drawable.GradientDrawable.Orientation.TOP_BOTTOM);
+            gd.setColors(new int[]{top, bg});
+            // 首字压到 15% 左右：是「纹理」不是「文字」，不与封面上的任何信息争读
+            mono.setColor(dark ? 0x38FFFFFF : 0x2614171C);
+            mono.setTextAlign(Paint.Align.CENTER);
+            mono.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+            spine.setColor(dark ? 0x1F000000 : 0x0D000000);
+            edge.setColor(dark ? 0x1AFFFFFF : 0x12000000);
         }
 
         @Override
         protected void onBoundsChange(Rect r) {
             super.onBoundsChange(r);
             int w = r.width(), h = r.height();
-            gd.setCornerRadius(w * 0.08f);
+            corner = w * 0.08f;
+            gd.setCornerRadius(corner);
             gd.setBounds(r);
+            clip.reset();
+            rf.set(r);
+            clip.addRoundRect(rf, corner, corner, Path.Direction.CW);
+            spineW = w * 0.052f;
+            spineX = r.left + spineW;
             if (w < 10 || h < 10) {
-                lines = java.util.Collections.emptyList();
+                monoSize = 0;
                 return;
             }
-            // 折行排版：内边距 14% 宽；字号从「单行能放 6 字」起，行数越多越小，
-            // 最小到 0.11 倍宽（太小的字不如直接截断）
-            float pad = w * 0.14f;
-            float maxW = w - pad * 2;
-            float size = w / 6f;
-            List<String> best = null;
-            for (; size >= w * 0.11f; size *= 0.88f) {
-                p.setTextSize(size);
-                List<String> ls = wrap(maxW);
-                if (ls.size() <= Math.max(2, (int) ((h - pad * 2) / (size * 1.32f)))) {
-                    best = ls;
-                    break;
-                }
-            }
-            if (best == null) { // 字号缩到最小仍未收敛，取最后一档
-                p.setTextSize(size);
-                best = wrap(maxW);
-            }
-            lines = best;
-            textSize = size;
-            lineH = size * 1.32f;
-            p.getFontMetrics(fm); // 取当前字号下的 ascent/baseline 信息
-            float total = lines.size() * lineH;
-            baseY = (h - total) / 2f - h * 0.02f - fm.ascent;
+            monoSize = Math.min(w, h) * 0.50f;
+            mono.setTextSize(monoSize);
+            // 顶部一层极淡冷光，让平面色块有一点「纸面受光」的体积感
+            gloss.setShader(new LinearGradient(r.left, r.top, r.left, r.top + h * 0.55f,
+                    dark ? 0x0EFFFFFF : 0x18FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP));
         }
 
         @Override
         public void draw(Canvas canvas) {
             Rect r = getBounds();
             gd.draw(canvas);
-            if (lines.isEmpty()) return;
-            p.setTextSize(textSize);
-            p.getFontMetrics(fm); // fm 随 textSize 变，仍在 draw 里取（极轻量、无分配）
-            float y = baseY;
-            for (String ln : lines) {
-                canvas.drawText(ln, r.centerX(), y, p);
-                y += lineH;
+            int w = r.width(), h = r.height();
+            canvas.save();
+            canvas.clipPath(clip);
+            canvas.drawRect(r.left, r.top, r.right, r.top + h * 0.55f, gloss);
+            // 书脊：一条比底色略深的窄带 + 右侧一条发丝线
+            if (spineW > 0) {
+                canvas.drawRect(r.left, r.top, spineX, r.bottom, spine);
+                float lw = Math.max(1f, w * 0.0035f);
+                canvas.drawRect(spineX, r.top, spineX + lw, r.bottom, edge);
             }
+            canvas.restore();
+            if (monoSize <= 0) return;
+            mono.setTextSize(monoSize);
+            mono.getFontMetrics(fm);
+            float y = h / 2f - (fm.ascent + fm.descent) / 2f;
+            canvas.drawText(ch, w / 2f, y, mono);
         }
 
-        /** 按当前字号折行：CJK 逐字断行，拉丁词尽量不断在词中；超 8 行截断 */
-        private List<String> wrap(float maxW) {
-            List<String> out = new ArrayList<>();
-            StringBuilder cur = new StringBuilder();
-            float cw = 0;
-            String[] chars = name.split("(?<=.)");
-            for (int i = 0; i < chars.length; i++) {
-                String ch = chars[i];
-                float w = p.measureText(ch);
-                if (cw + w > maxW && cur.length() > 0) {
-                    // 空格处优先断行：拉丁词不在词中间切开
-                    int sp = lastSpace(cur);
-                    if (sp > 0 && sp < cur.length() - 1) {
-                        out.add(cur.substring(0, sp));
-                        String rest = cur.substring(sp + 1);
-                        cur.setLength(0);
-                        cur.append(rest);
-                        cw = p.measureText(rest);
-                    } else {
-                        out.add(cur.toString());
-                        cur.setLength(0);
-                        cw = 0;
-                    }
-                }
-                cur.append(ch);
-                cw += w;
-                if (out.size() >= 8) break;
-            }
-            if (out.size() < 8 && cur.length() > 0) out.add(cur.toString());
-            if (out.size() >= 8) {
-                // 截断：最后一行保底留 2 字宽画省略号
-                String last = out.get(7);
-                while (p.measureText(last + "…") > maxW && last.length() > 1) {
-                    last = last.substring(0, last.length() - 1);
-                }
-                out = out.subList(0, 8);
-                out.set(7, last + "…");
-            }
-            return out;
+        @Override
+        public void setAlpha(int alpha) {
         }
 
-        private static int lastSpace(StringBuilder sb) {
-            for (int i = sb.length() - 1; i >= 0; i--) {
-                if (Character.isWhitespace(sb.charAt(i))) return i;
+        @Override
+        public void setColorFilter(android.graphics.ColorFilter cf) {
+        }
+
+        @Override
+        public int getOpacity() {
+            return android.graphics.PixelFormat.OPAQUE;
+        }
+    }
+
+    /** 极简·纪（Monolith）无封面占位：莫兰迪底 + 顶部短横线 + 居中书名 + 作者 + 底部进度条。 */
+    private static final class MonolithDrawable extends Drawable {
+        private static final int[] MORANDI = {0xFFE6DFD3, 0xFFDCE5DF, 0xFFE3DFE8};
+        private final String name, author;
+        private final int bg, accent;
+        private final float progress, density, scaledDensity;
+        private final GradientDrawable gd = new GradientDrawable();
+        private final RectF rf = new RectF();
+        private final Paint topLine = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint authorPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint barBg = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint barFg = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final TextPaint titlePaint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint.FontMetrics fm = new Paint.FontMetrics();
+        private StaticLayout title;
+
+        MonolithDrawable(String name, String author, int accent, float progress) {
+            this.name = name == null ? "" : name.trim();
+            this.author = author == null ? "" : author.trim();
+            this.accent = accent;
+            this.progress = Math.max(0f, Math.min(1f, progress));
+            android.util.DisplayMetrics dm =
+                    android.content.res.Resources.getSystem().getDisplayMetrics();
+            this.density = dm.density;
+            this.scaledDensity = dm.scaledDensity;
+            int hash = (this.name.isEmpty() ? 0 : this.name.hashCode()) & 0x7FFFFFFF;
+            this.bg = MORANDI[hash % MORANDI.length];
+            gd.setColor(bg);
+            topLine.setColor(0xFF1A1C23);                 // 暗色短横线
+            titlePaint.setColor(0xFF1A1C23);              // 深灰书名
+            titlePaint.setTextSize(18f * scaledDensity); // 18sp Bold
+            titlePaint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+            authorPaint.setColor(0xFF7A8299);             // 中灰作者
+            authorPaint.setTextSize(12f * scaledDensity); // 12sp
+            authorPaint.setTextAlign(Paint.Align.CENTER);
+            barBg.setColor(0x33000000);                   // 半透明底
+            barFg.setColor(accent);                       // 进度 = 强调色
+        }
+
+        @Override
+        protected void onBoundsChange(Rect r) {
+            super.onBoundsChange(r);
+            int w = r.width();
+            gd.setCornerRadius(w * 0.08f);
+            gd.setBounds(r);
+            String s = name.isEmpty() ? "书" : name;
+            int pad = (int) (16 * density);
+            int avail = Math.max(1, w - pad * 2);
+            title = StaticLayout.Builder.obtain(s, 0, s.length(), titlePaint, avail)
+                    .setAlignment(Layout.Alignment.ALIGN_CENTER)
+                    .setIncludePad(false)
+                    .setMaxLines(3)
+                    .setEllipsize(android.text.TextUtils.TruncateAt.END)
+                    .build();
+        }
+
+        @Override
+        public void draw(Canvas canvas) {
+            Rect r = getBounds();
+            int w = r.width(), h = r.height();
+            gd.draw(canvas);
+            float cx = r.left + w / 2f;
+            // 顶部：24dp 宽、2dp 高的暗色短横线
+            float lineW = 24 * density, lineH = 2 * density;
+            float lineY = r.top + 16 * density;
+            rf.set(cx - lineW / 2f, lineY, cx + lineW / 2f, lineY + lineH);
+            canvas.drawRoundRect(rf, lineH / 2f, lineH / 2f, topLine);
+            // 底部：2dp 高圆角进度条，半透明底 + 强调色进度
+            float barH = 2 * density;
+            float left = r.left + 16 * density, right = r.right - 16 * density;
+            float barY = r.bottom - 14 * density - barH;
+            rf.set(left, barY, right, barY + barH);
+            canvas.drawRoundRect(rf, barH / 2f, barH / 2f, barBg);
+            if (progress > 0f && right > left) {
+                rf.set(left, barY, left + (right - left) * progress, barY + barH);
+                canvas.drawRoundRect(rf, barH / 2f, barH / 2f, barFg);
             }
-            return -1;
+            // 作者：12sp 中灰，压在进度条上方
+            if (!author.isEmpty()) {
+                authorPaint.getFontMetrics(fm);
+                canvas.drawText(author, cx, barY - 8 * density - fm.descent, authorPaint);
+            }
+            // 书名：18sp Bold 深灰，居中且允许换行
+            if (title != null) {
+                canvas.save();
+                canvas.translate(r.left + (w - title.getWidth()) / 2f,
+                        r.top + (h - title.getHeight()) / 2f);
+                title.draw(canvas);
+                canvas.restore();
+            }
         }
 
         @Override

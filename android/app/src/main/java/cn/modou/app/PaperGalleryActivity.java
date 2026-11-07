@@ -61,18 +61,29 @@ public class PaperGalleryActivity extends Activity {
 
     /** 设置页 / 其它页面：普通打开，画廊自己落盘 */
     static void launch(Activity from) {
-        from.startActivity(new Intent(from, PaperGalleryActivity.class));
+        ModouTransition.push(from, new Intent(from, PaperGalleryActivity.class));
     }
 
     /** 阅读页：带结果打开，让阅读页用原有 applyTheme 完整刷新正文与工具坞 */
     static void launchForResult(Activity from, int requestCode) {
         from.startActivityForResult(new Intent(from, PaperGalleryActivity.class), requestCode);
+        ModouTransition.forward(from);
+    }
+
+    /** 统一返回转场：三套语言各自的 pop 动作（见 {@link ModouTransition}） */
+    @Override
+    public void finish() {
+        super.finish();
+        ModouTransition.back(this);
     }
 
     @Override
     protected void onCreate(Bundle b) {
         ModouUi.applyTheme(this);
         super.onCreate(b);
+        // 0.9.184：同 ThemeGalleryActivity —— decor 默认会再让一次状态栏，
+        // 与页面自己的 statusBarPx() 叠加成顶上那片大留白。显式 edge-to-edge，只让一次。
+        getWindow().setDecorFitsSystemWindows(false);
         ui = ModouUi.of(this);
         sp = ui.spec;
         g = sp.paperGallery;
@@ -111,35 +122,39 @@ public class PaperGalleryActivity extends Activity {
         root.setBackground(new ThemeGalleryActivity.Backdrop(
                 g.backdropA, g.backdropB, g.glassCard));
 
+        // 0.9.173：与「主题外观」同一套修法 —— 固定顶栏时 ScrollView 从条下方开始，
+        // 内容上滑只在条的下缘被裁切，绝不会压到返回钮（0.9.164 的「整屏 + 62dp 占位」已废弃）。
+        final boolean fixedBar = g.largeTitleScroll || g.appBarTonalScroll;
+
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(20);
-        content.setPadding(pad, statusBarPx() + dp(4), pad, dp(120));
+        content.setPadding(pad, fixedBar ? dp(2) : statusBarPx() + dp(4), pad, dp(120));
 
         ScrollView sc = new ScrollView(this);
         sc.setVerticalScrollBarEnabled(false);
         sc.setFillViewport(false);
+        sc.setClipToPadding(true);
         sc.addView(content, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        root.addView(sc, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // 0.9.164（§2.11 B5 / A9）：与「主题外观」画廊同一套固定覆盖层顶栏，
-        // 不再放在 content 第一行 —— 旧写法滚动时顶栏会一起滚出视口，
-        // inline 标题与 hairline 刚淡入就消失。墨读保留原结构，逐像素零回归。
-        final boolean fixedBar = g.largeTitleScroll || g.appBarTonalScroll;
         View bar = topBar();
         if (fixedBar) {
-            View spacer = new View(this);
-            content.addView(spacer, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(62)));
+            topChrome.setAlpha(1f);
+            if (topHairline != null) topHairline.setAlpha(g.largeTitleScroll ? 1f : 0f);
             FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP);
             blp.topMargin = statusBarPx();
             root.addView(bar, blp);
+            FrameLayout.LayoutParams slp = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            slp.topMargin = statusBarPx() + dp(62);
+            root.addView(sc, slp);
         } else {
             content.addView(bar);
+            root.addView(sc, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         }
 
         content.addView(eyebrow());
@@ -158,9 +173,9 @@ public class PaperGalleryActivity extends Activity {
                 .bigTitle(titleView)
                 .inlineTitle(inlineTitle)
                 .hairline(topHairline)
-                .chrome(topChrome)
                 .tonal(topTonal)
                 .bar(topBarBox)
+                .range(dp(g.galleryStyle == 1 ? 132 : 128))
                 .attach(sc);
 
         root.addView(actionBar(), new FrameLayout.LayoutParams(
@@ -168,9 +183,10 @@ public class PaperGalleryActivity extends Activity {
                 Gravity.BOTTOM));
 
         refresh(false);
-        content.setAlpha(0f);
-        content.setTranslationY(dp(18));
-        content.animate().alpha(1f).translationY(0f)
+        // 同上：只做位移入场，不再用 alpha 0 —— 动画被取消时会留下一张空白页
+        content.setAlpha(1f);
+        content.setTranslationY(dp(14));
+        content.animate().translationY(0f)
                 .setDuration(g.durIn).setInterpolator(interp()).start();
         return root;
     }
@@ -182,11 +198,16 @@ public class PaperGalleryActivity extends Activity {
 
         // 0.9.164：滚动后才浮出的顶栏材质底色（iOS 磨砂 / M3 surfaceContainer），
         // 作为最底层铺在内容行之下，固定覆盖层滚动时才不会透出下方内容。
+        // 0.9.177：材质层必须是**条的固定高度**，不能用 MATCH_PARENT。
+        // FrameLayout 在 WRAP_CONTENT 父里会把 MATCH_PARENT 子量成「可用高度」，
+        // 于是这条本是 62dp 的顶栏底色其实有整屏高 —— 静止时 alpha=0 看不出来，
+        // 一滚动（旧逻辑按进度把 alpha 拉到 1）整页就被它盖成一片白。这就是「上滑变白」。
         topChrome = new View(this);
         topChrome.setBackgroundColor(g.barColor);
         topChrome.setAlpha(0f);
         wrap.addView(topChrome, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(62)));
+        wrap.setMinimumHeight(dp(62));
 
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
@@ -197,7 +218,8 @@ public class PaperGalleryActivity extends Activity {
         bar.addView(back, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
         FrameLayout mid = new FrameLayout(this);
-        brandView = ModouUi.tv(this, "轻阅", 14f, ui.text);
+        // 0.9.201：与主题页统一为「页面名」，不再在顶栏放品牌词「轻阅」。
+        brandView = ModouUi.tv(this, "阅读纸张", 14f, ui.text);
         brandView.setTypeface(Typeface.DEFAULT_BOLD);
         brandView.setGravity(Gravity.CENTER_VERTICAL);
         brandView.setPadding(dp(10), 0, 0, 0);
@@ -221,7 +243,7 @@ public class PaperGalleryActivity extends Activity {
                 : Color.argb(0x0D, Color.red(sp.accent), Color.green(sp.accent), Color.blue(sp.accent)));
         topTonal.setAlpha(0f);
         wrap.addView(topTonal, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(62)));
 
         topHairline = new View(this);
         topHairline.setBackgroundColor(sp.line);
@@ -448,10 +470,11 @@ public class PaperGalleryActivity extends Activity {
         int pi = indexOf(pending);
         for (int i = 0; i < ids.length; i++) {
             boolean on = ids[i].equals(pending);
-            cardSurfaces[i].setSelected(on);
-            badges[i].setSelected(on);
-            cardNames[i].setTextColor(on ? g.selectColor : ui.text);
-            if (animate) {
+            // 与主题画廊同一套防御：网格形式可能不建勾选圈（M3 用容器色表达选中）
+            if (cardSurfaces[i] != null) cardSurfaces[i].setSelected(on);
+            if (badges[i] != null) badges[i].setSelected(on);
+            if (cardNames[i] != null) cardNames[i].setTextColor(on ? g.selectColor : ui.text);
+            if (animate && cards[i] != null) {
                 float s = on ? 1.025f : 1f;
                 cards[i].animate().scaleX(s).scaleY(s)
                         .setDuration(g.spring ? g.durIn : 180)
@@ -561,8 +584,9 @@ public class PaperGalleryActivity extends Activity {
     /** 状态栏 / 导航栏与页面底衬同色，系统栏图标按深浅反色（参考图的整页沉浸感） */
     private void applySystemBars() {
         try {
-            getWindow().setStatusBarColor(g.backdropA);
-            getWindow().setNavigationBarColor(g.backdropB);
+            // 0.9.190：与主题外观页一致 —— 系统栏透明，底衬铺到屏幕最顶
+            getWindow().setStatusBarColor(android.graphics.Color.TRANSPARENT);
+            getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
             View decor = getWindow().getDecorView();
             int flags = decor.getSystemUiVisibility();
             int light = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR

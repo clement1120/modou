@@ -37,6 +37,12 @@ final class ListIcon {
     static final int CLOCK      = 10;  // 阅读时间
     static final int INFO       = 11;  // 关于 / 说明
     static final int TRASH      = 12;  // 清空（垃圾桶）
+    /* 0.9.172：导入页 / 本地书页用到的四枚（文件、文件夹、排序、刷新）。
+       与上面 12 枚同一套 24dp / 1.8-1.9 线宽矢量，落在 iOS 色块或 M3 tonal 圆里同档。 */
+    static final int FILE       = 13;  // 本地文件（.txt / .epub）
+    static final int FOLDER     = 14;  // 书籍文件夹
+    static final int SORT       = 15;  // 排序
+    static final int REFRESH    = 16;  // 重新扫描
 
     private ListIcon() { }
 
@@ -50,7 +56,11 @@ final class ListIcon {
 
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(ModouUi.dp(c, sp.listIconCornerDp));
-        bg.setColor(ios ? iosColor(key) : ModouUi.alpha(u.accent, 0x1F));
+        // 0.9.204：iOS 六枚纯饱和系统色同屏出现互相打架，是设置页廉价感主因。
+        // 保留分组列表的彩色方块形状，但混入 40% 白降饱和；M3 tonal 圆也再淡一档。
+        int base = iosColor(key);
+        bg.setColor(ios ? ModouUi.mix(base, 0xFFFFFFFF, 0.40f)
+                : ModouUi.alpha(u.accent, 0x14));
 
         FrameLayout box = new FrameLayout(c);
         box.setBackground(bg);
@@ -59,8 +69,9 @@ final class ListIcon {
         int rid = resId(key);
         if (rid != 0) glyph.setImageResource(rid);
         glyph.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        // iOS 白 glyph 落在彩色方块上；M3 用 accent 单色落在淡 tonal 圆上。
-        glyph.setColorFilter(ios ? 0xFFFFFFFF : u.accent);
+        // 0.9.204：底色变淡后白 glyph 会看不清，iOS 改同色系深色（仍是彩色方块 +
+        // 白底分组列表的骨架），M3 维持 accent 单色落在淡 tonal 圆上。
+        glyph.setColorFilter(ios ? ModouUi.mix(base, 0xFF000000, 0.28f) : u.accent);
         int gs = ModouUi.dp(c, sp.listIconGlyphDp);
         box.addView(glyph, new FrameLayout.LayoutParams(gs, gs, Gravity.CENTER));
 
@@ -85,6 +96,10 @@ final class ListIcon {
             case CLOCK:      return 0xFFFF9500;  // orange
             case INFO:       return 0xFF8E8E93;  // gray
             case TRASH:      return 0xFFFF9500;  // orange
+            case FILE:       return 0xFF007AFF;  // blue（文件 = 系统蓝）
+            case FOLDER:     return 0xFF007AFF;  // blue
+            case SORT:       return 0xFF8E8E93;  // gray
+            case REFRESH:    return 0xFF007AFF;  // blue
             default:         return 0xFF007AFF;
         }
     }
@@ -103,6 +118,10 @@ final class ListIcon {
             case CLOCK:      return R.drawable.ic_ls_clock;
             case INFO:       return R.drawable.ic_ls_info;
             case TRASH:      return R.drawable.ic_ls_trash;
+            case FILE:       return R.drawable.ic_ls_file;
+            case FOLDER:     return R.drawable.ic_ls_folder;
+            case SORT:       return R.drawable.ic_ls_sort;
+            case REFRESH:    return R.drawable.ic_ls_refresh;
             default:         return 0;
         }
     }

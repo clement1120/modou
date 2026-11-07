@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 墨读 · 返回：当前页下沉淡出 -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:interpolator/accelerate_cubic"
+    android:shareInterpolator="true">
+    <alpha
+        android:duration="240"
+        android:fromAlpha="1"
+        android:toAlpha="0" />
+    <translate
+        android:duration="240"
+        android:fromYDelta="0"
+        android:toYDelta="2.5%p" />
+</set>

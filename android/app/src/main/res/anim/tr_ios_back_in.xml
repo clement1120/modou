@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- iOS 27 · pop：下层页面从左侧视差位回到原点 -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:interpolator/fast_out_slow_in"
+    android:shareInterpolator="true">
+    <translate
+        android:duration="330"
+        android:fromXDelta="-28%p"
+        android:toXDelta="0" />
+    <alpha
+        android:duration="330"
+        android:fromAlpha="0.88"
+        android:toAlpha="1" />
+</set>

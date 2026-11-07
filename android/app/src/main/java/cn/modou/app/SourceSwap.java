@@ -135,14 +135,9 @@ final class SourceSwap {
         headerRow.addView(titleTv, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        final TextView refresh = ModouUi.tv(ctx, "↻ 重新搜索", 12.5f, host.subColor());
-        android.graphics.drawable.GradientDrawable rbg = new android.graphics.drawable.GradientDrawable();
-        rbg.setCornerRadius(ModouUi.dp(ctx, 13));
-        rbg.setColor(ModouUi.alpha(host.subColor(), 0x18));
-        refresh.setBackground(rbg);
-        refresh.setPadding(ModouUi.dp(ctx, 12), ModouUi.dp(ctx, 5),
-                ModouUi.dp(ctx, 12), ModouUi.dp(ctx, 5));
-        refresh.setGravity(android.view.Gravity.CENTER);
+        final TextView refresh = ModouUi.button(ctx, "重新搜索",
+                DesignSpec.ButtonKind.TONAL, ModouUi.CAPSULE, null);
+        refresh.setContentDescription("重新搜索本书的其他来源");
         LinearLayout.LayoutParams refreshLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         refreshLp.leftMargin = ModouUi.dp(ctx, 10);
@@ -263,7 +258,8 @@ final class SourceSwap {
         // 只有一两条结果时下方全是空白，DOWN 落不到任何子行上，ViewGroup 默认返回 false，
         // 事件链当场断掉 —— 后续 MOVE 根本不会回到 dispatchTouchEvent，横滑自然没反应。
         rowsBox.setClickable(true);
-        rowsBox.setOnClickListener(v -> { /* 空白区只用来接横滑手势，不做任何事 */ });
+        // 空白区只接收手势，不向 TalkBack 暴露一个没有动作的可点击节点。
+        rowsBox.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
         final int[] rendered = {0};
 
         LinearLayout box = new LinearLayout(ctx);

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 墨读 · 旧页像纸一样轻轻沉下去 -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:interpolator/accelerate_cubic"
+    android:shareInterpolator="true">
+    <alpha
+        android:duration="220"
+        android:fromAlpha="1"
+        android:toAlpha="0" />
+    <translate
+        android:duration="220"
+        android:fromYDelta="0"
+        android:toYDelta="-1.2%p" />
+</set>

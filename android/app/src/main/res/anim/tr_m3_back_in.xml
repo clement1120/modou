@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- M3 Expressive · 返回：从胀大状态收回，与入场对称 -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:interpolator/fast_out_slow_in"
+    android:shareInterpolator="true">
+    <alpha
+        android:duration="280"
+        android:fromAlpha="0"
+        android:toAlpha="1" />
+    <scale
+        android:duration="280"
+        android:fromXScale="1.04"
+        android:fromYScale="1.04"
+        android:pivotX="50%"
+        android:pivotY="50%"
+        android:toXScale="1"
+        android:toYScale="1" />
+</set>

@@ -43,6 +43,8 @@ final class SettingsPanel {
     private ModouUi ui;
     private ModouStore store;
     private LinearLayout body;
+    /** 0.9.183：首屏错峰入场只播一次，避免每次 onResume 重播 */
+    private boolean staggeredOnce;
     private TextView cacheStat;
     private TextView readStat;
     private TextView storageVal;
@@ -131,13 +133,15 @@ final class SettingsPanel {
         LinearLayout lang = ui.groupCard(host);
         DesignSpec.Lang curLang = DesignSpec.current(host);
         lang.addView(ui.iconRow(host, ListIcon.APPEARANCE, "主题外观",
-                curLang.label + " · " + themeName(ModouUi.themeMode(host)),
-                "配色 / 圆角 / 弹窗 / 导航形态，以及深浅与跟随系统",
+                brief(curLang.label, curLang == DesignSpec.Lang.MATERIAL ? "M3"
+                        : curLang == DesignSpec.Lang.MONOLITH ? "极简" : curLang.label)
+                        + " · " + themeName(ModouUi.themeMode(host)),
+                brief("配色 / 圆角 / 弹窗 / 深浅", "配色、圆角与深浅"),
                 () -> ThemeGalleryActivity.launch(host)));
         lang.addView(ModouUi.groupDivider(host, true));
         lang.addView(ui.iconRow(host, ListIcon.PAPER, "阅读纸张",
                 DesignSpec.paperLabel(NativeTheme.currentName(host)),
-                "素月白 / 晨光米 / 远山青 / 夜间 · 点开看大图预览",
+                brief("素月白 / 晨光米 / 远山青 / 夜间 · 点开看大图预览", "四种纸张 · 可预览大图"),
                 () -> PaperGalleryActivity.launch(host)));
         body.addView(lang);
 
@@ -165,10 +169,10 @@ final class SettingsPanel {
         cache.addView(statLine);
         cache.addView(ModouUi.groupDivider(host, true));
         cache.addView(ui.iconRow(host, ListIcon.FILTER, "按书清理缓存", "",
-                "占用最大的 8 本，可单独清正文或目录", this::openCacheByBook));
+                brief("占用最大的 8 本，可单独清正文或目录", "按书清理正文或目录"), this::openCacheByBook));
         cache.addView(ModouUi.groupDivider(host, true));
         cache.addView(ui.iconRow(host, ListIcon.TRASH, "清空正文缓存", "",
-                "已读章节需要联网重新获取", this::clearCache));
+                brief("已读章节需要联网重新获取", "清理后需联网重取"), this::clearCache));
         body.addView(cache);
 
         /* ---------- 数据 ---------- */
@@ -194,7 +198,7 @@ final class SettingsPanel {
         data.addView(ModouUi.groupDivider(host, true));
         LinearLayout storageRow = ui.iconRow(host, ListIcon.STORAGE, "书库占用",
                 BookFiles.sizeText(ModouStore.get(host).dbBytes()),
-                "数据库 + 插图 + 封面 + 临时文件，点开做体检与回收", this::openStorage);
+                brief("数据库 + 插图 + 封面 + 临时文件，点开做体检与回收", "查看占用并回收空间"), this::openStorage);
         // 0.9.167：值改从 tag 访问器取。加了 leading 图标后 child 下标整体右移，
         // 旧的 getChildAt(1) 会取错甚至 ClassCastException（同类 bug，一并修）。
         storageVal = ModouUi.rowValue(storageRow);
@@ -208,7 +212,7 @@ final class SettingsPanel {
         data.addView(ModouUi.groupDivider(host, true));
         // 危险项：标题色走 titleColor 重载，不再反射 ((LinearLayout)getChildAt(0)).getChildAt(0)
         data.addView(ui.iconRow(host, ListIcon.DANGER, "清空所有数据", "",
-                "书源 / 书架 / 进度 / 书签全部删除且不可恢复",
+                brief("书源 / 书架 / 进度 / 书签全部删除且不可恢复", "全部删除且不可恢复"),
                 ui.danger, this::clearAll));
         body.addView(data);
 
@@ -256,6 +260,21 @@ final class SettingsPanel {
 
         refreshCache();
         refreshReadStat();
+
+        // 0.9.183：分组内容错峰入场。只在首次构建时播一次 —— 每次 onResume 重播会变成骚扰。
+        if (!staggeredOnce) {
+            staggeredOnce = true;
+            ModouMotion.stagger(body);
+        }
+    }
+
+    /**
+     * 0.9.205：带行首图标的 M3 / iOS 文字区被挤窄，副标已改单行，继续用完整
+     * 说明会在行尾挂一串「…」，比原来的换行更糙。这里按语言给短文案；
+     * 墨读（listIconStyle=0）无图标块、文字区宽，走 full 分支，逐像素不变。
+     */
+    private String brief(String full, String concise) {
+        return ui.spec.listIconStyle == 0 ? full : concise;
     }
 
     private static String themeName(String m) {
@@ -430,7 +449,13 @@ final class SettingsPanel {
         return row;
     }
 
+    /** 小按钮（清正文 / 清目录）：0.9.173 起 iOS / M3 走统一 chip，墨读保持原 8dp 圆角块 */
     private TextView smallBtn(String text, int color) {
+        if (ui.spec.chipStyle != 0) {
+            TextView c = ModouUi.chip(host, text, false, null);
+            c.setTextColor(color);
+            return c;
+        }
         TextView t = ModouUi.tv(host, text, 12.5f, color);
         t.setGravity(Gravity.CENTER);
         t.setPadding(ModouUi.dp(host, 14), ModouUi.dp(host, 6),
@@ -1030,8 +1055,10 @@ final class SettingsPanel {
                         + "书 " + counts[1] + " 本 · 进度 " + counts[2]
                         + " · 书签 " + counts[5] + " · 设置 " + counts[4]
                         + (relink[0] > 0 ? "\n\n本地书正文已重建 " + relink[0] + " 本。" : "")
-                        + (relink[1] > 0 ? "\n\n有 " + relink[1] + " 本本地书读不到原文件（清空数据会撤销"
-                        + "系统的文件访问授权）。请到书架重新导入这几本书，原文件还在原来的位置。"
+                        + (relink[1] > 0 ? "\n\n有 " + relink[1] + " 本本地书读不到原文件"
+                        + "（重装 / 清空数据会撤销系统的文件夹授权）。\n"
+                        + "去「本地书籍」重新授权一次那个文件夹，页面顶部会出现「一键补齐」——"
+                        + "正文会重新从原文件解析，阅读进度、书签都不会丢。"
                         : "");
                 host.runOnUiThread(() -> {
                     ModouUi.alert(host, "导入完成", msg + "\n\n重新进入书架即可看到。");

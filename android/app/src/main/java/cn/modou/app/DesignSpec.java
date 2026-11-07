@@ -28,8 +28,8 @@ final class DesignSpec {
 
     enum Lang {
         MODOU("modou", "墨读", "流体玻璃 · 悬浮浮岛"),
-        MATERIAL("material", "Material 3", "色调分层 · 居中对话框"),
-        LIQUID("liquid", "iOS 26", "液态玻璃 · 分组表格");
+        MATERIAL("material", "M3 Expressive", "色调分层 · 弹性形状"),
+        MONOLITH("monolith", "极简·纪", "莫兰迪色 · 胶囊浮岛");
 
         final String id;
         final String label;
@@ -120,6 +120,10 @@ final class DesignSpec {
 
     private static final String PREFS = "modou";
     private static final String PREF_LANG = "designLang";
+    /** 0.9.184：强调色覆盖（0 = 跟随设计语言默认色） */
+    private static final String PREF_ACCENT = "accentColor";
+    /** 构造期读取的一次性覆盖值：{@link #of(Context, boolean)} 填，构造函数消费 */
+    private static int sAccent;
     /** 网页版同步用的 settings 表键与 JS 钩子（Stage 6 接上） */
     static final String SETTING_KEY = "designLang";
 
@@ -135,7 +139,7 @@ final class DesignSpec {
 
     static Lang parse(String id) {
         if (Lang.MATERIAL.id.equals(id)) return Lang.MATERIAL;
-        if (Lang.LIQUID.id.equals(id)) return Lang.LIQUID;
+        if (Lang.MONOLITH.id.equals(id)) return Lang.MONOLITH;
         return Lang.MODOU;
     }
 
@@ -152,24 +156,54 @@ final class DesignSpec {
         } catch (Throwable ignore) {
             /* 数据库暂不可用：下次启动以 pref 为准 */
         }
-        try {
-            ModouBridge br = ModouBridge.shared();
-            if (br != null) {
-                br.evalJs("window.__modouSaveDesignLang && window.__modouSaveDesignLang('"
-                        + l.id + "')");
-            }
-        } catch (Throwable ignore) {
-            /* 网页版还没加载这个钩子：不影响原生 */
-        }
+        // 0.9.175：这里原来还有一句 `window.__modouSaveDesignLang(...)` 的 JS 钩子。
+        // 网页版书架已退役（web/index.html 现在只是隐藏 WebView 的引擎宿主，没有 UI），
+        // 钩子没有宿主、每次切换都在跑一个空 eval，故删除。settings 表那一份仍要写：
+        // 迁移 / 诊断 / 将来的多端同步都读它。
     }
 
     /** 供 {@link ModouUi} 比对「建页时的语言/深浅」与「此刻」是否一致 */
     static String stateKey(Context c, boolean dark) {
-        return current(c).id + ":" + (dark ? "d" : "l");
+        // 0.9.184：强调色也算进状态键 —— 换了颜色，其它页面在 onResume 会自动重建
+        return current(c).id + ":" + (dark ? "d" : "l") + ":" + currentAccent(c);
+    }
+
+    /* ---------- 0.9.184：强调色 ---------- */
+
+    /** 用户选的强调色；0 = 跟随设计语言的默认强调色 */
+    static int currentAccent(Context c) {
+        if (c == null) return 0;
+        try {
+            return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getInt(PREF_ACCENT, 0);
+        } catch (Throwable e) {
+            return 0;
+        }
+    }
+
+    /** 写入强调色并让所有页面在下次 onResume 重建（color = 0 表示恢复默认） */
+    static void saveAccent(Context c, int color) {
+        if (c == null) return;
+        c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putInt(PREF_ACCENT, color).apply();
+    }
+
+    private static float luminance(int c) {
+        return (0.2126f * ((c >> 16) & 0xFF) + 0.7152f * ((c >> 8) & 0xFF)
+                + 0.0722f * (c & 0xFF)) / 255f;
+    }
+
+    /** 深色主题下把强调色调亮一点，否则压在深底上发闷 */
+    private static int brighten(int c, float amt) {
+        int a = (c >>> 24) & 0xFF, r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+        r = (int) Math.min(255, r + (255 - r) * amt);
+        g = (int) Math.min(255, g + (255 - g) * amt);
+        b = (int) Math.min(255, b + (255 - b) * amt);
+        return (a << 24) | (r << 16) | (g << 8) | b;
     }
 
     /** 只依赖 dark，不回调 {@code ModouUi.isDark}，避免构造期循环 */
     static DesignSpec of(Context c, boolean dark) {
+        sAccent = currentAccent(c);
         return new DesignSpec(c == null ? Lang.MODOU : current(c), dark);
     }
 
@@ -359,6 +393,108 @@ final class DesignSpec {
     boolean bookCardHairline;        // 卡内是否画细线（M3 靠 tonal 分层，不画）
     int     bookFabStyle;            // 0=白色浮片描边 / 1=iOS 蓝填充 / 2=M3 tonal FAB
     float   bookTocBarCornerDp;      // 目录条圆角
+
+    /* ---------- 0.9.172：导入页 / 本地书页构图 ----------
+       这两页是 Stage 4 里最后两块「ui.spec 使用数为 0」的主区：导入页把「选文件夹」
+       做成两张 16dp 墨读卡 + 两颗墨读按钮，本地书页是「一页胶囊按钮 + 一排独立小卡」。
+       三套语言在这里的分歧不是配色，而是**信息组织方式**：
+         · iOS 26  —— inset grouped 分组表格：白卡 + 44/46dp 行 + 行尾 › + 12sp 组脚注，
+                      动作直接由「点这一行」承担，页面上没有按钮；
+         · M3 Expressive —— 每项一张 filled card（surfaceContainerLow）+ 40dp Filled /
+                      Outlined 按钮，卡内标题 titleMedium、说明 bodyMedium；
+         · 墨读 —— 保持原来的两张圆角卡 + 填充主按钮 + 描边次按钮。
+       页面只读字段，不写 if (lang == ...)；墨读全部取原值 → 逐像素零回归。 */
+    int     ioStyle;                 // 两页共用：0=墨读 / 1=iOS 26 / 2=M3 Expressive
+    /* 导入页 */
+    float   ioTitleSp;               // 页面标题字号（26 衬线 / 34 大标题 / 22 顶栏）
+    int     ioTitleWeight;           // 0 normal / 1 bold / 2 medium
+    boolean ioTitleSerif;            // 标题是否衬线（只有墨读）
+    float   ioIntroSp;               // 引导段字号（13 / 15 / 14）
+    float   ioFootSp;                // 组脚注 / 说明字号（12 / 12 / 12）
+    int     ioCardCornerDp;          // 卡 / 分组圆角（16 / 12 / 12）
+    int     ioCardGapDp;             // 卡与卡之间（12 / 18 / 8）
+    int     ioCardPadH;              // 卡内左右留白
+    int     ioCardPadT;              // 卡内上留白
+    int     ioCardPadB;              // 卡内下留白
+    int     ioCardBg;                // 0=ui.card / 1=分组白卡（iOS）/ 2=surfaceContainerLow
+    boolean ioRowChevron;            // 行尾 ›（iOS 点整行即动作）
+    int     ioRowHDp;                // 行高（0 = 随内容）
+    int     ioBtnHDp;                // 按钮高度（0 = 靠 padding 撑开）
+    /* 本地书页 */
+    int     localHeadHDp;            // 顶栏行高（46 / 44 / 64）
+    float   localNavTitleSp;         // 顶栏标题字号（21 / 17 / 22）
+    int     localNavTitleWeight;     // 0 normal / 1 bold / 2 medium
+    boolean localLargeTitle;         // 正文区是否再放大标题（iOS Large Title）
+    float   localLargeTitleSp;       // 大标题字号（34）
+    int     localHeadAction;         // 0=玻璃文字胶囊 / 1=iOS 蓝文字 / 2=M3 图标钮
+    float   localSubSp;              // 副标题（文件夹 · N 本）字号
+    int     localRowStyle;           // 0=独立卡 / 1=iOS 连续分组 / 2=M3 filled 卡
+    int     localRowCornerDp;        // 行 / 组圆角
+    int     localRowGapDp;           // 行间距（0 = 连续分组，靠分隔线）
+    int     localRowPadH;            // 行左右留白
+    int     localRowPadV;            // 行上下留白
+    int     localRowMinHDp;          // 行最小高度（0 = 不限制）
+    float   localNameSp;             // 文件名字号（15 / 17 / 16）
+    int     localNameWeight;         // 0 normal / 1 bold / 2 medium
+    float   localTagSp;              // 「已导入」标记字号（12.5 / 12 / 11）
+    int     localIconStyle;          // 0=无 / 1=iOS 文件色块 / 2=M3 tonal 圆
+    int     localIconDp;             // 图标容器边长（29 / 40）
+    int     localIconCornerDp;       // 容器圆角（7 / 999）
+    int     localGlyphDp;            // 容器内图标尺寸（18 / 22）
+    int     localTagStyle;           // 0=纯文字 / 1=iOS 胶囊 / 2=M3 chip
+    int     localAddStyle;           // 0=描边圆＋ / 1=iOS 蓝＋（无圈）/ 2=tonal 填充圆
+    int     localEmptyStyle;         // 0=虚线圆＋ / 1=iOS 符号+文字钮 / 2=M3 插画+按钮
+    int     localSelBarStyle;        // 0=卡片 / 1=iOS 工具条 / 2=M3 底栏
+    int     localDividerStartDp;     // 连续分组分隔线左缩进（0 = 不画）
+
+    /* ---------- 0.9.173：chip / 小按钮收口（A6 补充） ----------
+       工具栏上的「已激活条件」「清正文 / 清目录」这类小控件此前是三处各写一套：
+       999 胶囊 + 6% 墨色、12.5sp、padding 14/6 —— 三套语言共用同一颗。
+       这里把「小控件」也交给语言：iOS 是 systemFill 胶囊 + 12sp；M3 是 8dp 描边
+       chip + 11sp（选中换成 secondaryContainer tonal）；墨读保持原值。 */
+    int     chipStyle;          // 0=墨读 / 1=iOS / 2=M3
+    float   chipCornerDp;       // 999 / 999 / 8
+    float   chipLabelSp;        // 12.5 / 12 / 11
+    float   chipPadHDp;         // 水平内边距
+    float   chipPadVDp;         // 垂直内边距
+    boolean chipStroke;         // 是否描边（M3 outlined chip）
+    int     chipFill;           // 0=alpha(text,0x0F) / 1=sysFill2 / 2=透明
+    int     chipActiveFill;     // 0=toneAccent / 1=alpha(sysBlue,0x1F) / 2=secondaryContainer
+
+    /* ---------- 0.9.173：阅读页工具坞（Stage 5 第一刀） ----------
+       阅读页的纸张配色与设计语言正交（§2.10），所以工具坞的颜色仍取纸张色板
+       （theme.card / acc / sub），这里只规定**形状、材质厚度、字号、行内构图**：
+       墨读 = 22dp 玻璃浮卡 + 10.5sp 文字；iOS = 20dp 液态玻璃工具条 + 10sp；
+       M3 = 28dp 仅上两角 + tonal 实底 + 12sp Medium + 图标后 32×20 指示器药丸。 */
+    int     rdDockStyle;        // 0=墨读 / 1=iOS / 2=M3
+    float   rdDockCornerDp;     // 22 / 20 / 28
+    boolean rdDockTopOnly;      // M3：只有上两角圆（贴底底栏）
+    int     rdDockPadH;         // 卡片左右内边距
+    int     rdDockPadV;         // 卡片上下内边距
+    float   rdDockLabelSp;      // 图标下文字字号
+    int     rdDockLabelWeight;  // 0 normal / 1 bold / 2 medium
+    int     rdDockIconDp;       // 图标尺寸
+    int     rdDockItemPadV;     // 单项上下内边距
+    float   rdDockItemCornerDp; // 选中项底色圆角
+    boolean rdDockIndicator;    // M3：选中项在图标后画 tonal 药丸
+    float   rdDockMetaSp;       // 章节 / 页码字号
+
+    /* ---------- 0.9.173：阅读页其余控件（滑杆 / TTS 浮条 / 目录抽屉） ---------- */
+    int     rdSeekStyle;        // 0=墨读药丸 / 1=iOS 细轨圆点 / 2=M3 细轨 + 端点停靠点
+    float   rdSeekTrackDp;      // 轨道高 8 / 4 / 4
+    float   rdSeekThumbDp;      // 滑块半径 8 / 7.5 / 9
+    boolean rdSeekGlow;         // 墨读的内发光；iOS / M3 无
+    boolean rdSeekStopDots;     // M3：轨道两端 2dp 停靠点
+    float   rdTtsTitleSp;       // 朗读浮条标题字号 13.5 / 13 / 14
+    int     rdTtsTitleWeight;   // 字重 1 bold / 1 / 2 medium
+    float   rdTtsLabelSp;       // 上一句 / 暂停 / 下一句 标签 11 / 11 / 12
+    int     rdTtsPlayDp;        // 中央播放键 40 / 40 / 48
+    boolean rdTtsPlayFill;      // 中央键是否铺 tonal 圆底（M3）
+    float   rdTocTitleSp;       // 目录行标题 15 / 17 / 16
+    float   rdTocSubSp;         // 目录行副标题 12 / 13 / 12
+    int     rdTocPadV;          // 目录行上下留白 11 / 12 / 12
+    int     rdTocDividerStartDp;// 目录分隔线左缩进（0 = 不画）
+    boolean rdTocSelectedFill;  // M3：当前章节整行 tonal 底
 
     /* ---------- 弹层 ---------- */
     SheetAnchor sheetAnchor;     // 普通面板 / 表单
@@ -550,6 +686,10 @@ final class DesignSpec {
         int primaryBtnColor, primaryBtnText, cancelText;
         float btnRadiusDp;
         boolean barGlass;
+        /* 0.9.172：画廊页构图（此前三套只换配色/字体，信息架构一模一样） */
+        int galleryStyle;         // 0=墨读 / 1=iOS 26 / 2=M3 Expressive
+        int galleryGridStyle;     // 0=三列缩略卡 / 1=纵向分组列表（iOS）/ 2=两列 filled 卡（M3）
+        boolean galleryWideAction; // 底部是否为一个通栏主按钮（iOS / M3），否则保持胶囊双段
         /* 动效 */
         boolean spring;
         int durIn;
@@ -569,6 +709,10 @@ final class DesignSpec {
         boolean shelfBigTitleFade;   // 大标题是否随滚动收起（M3 Expressive large top app bar 也为 true）
         boolean shelfInlineCenter;   // 收起态 inline 标题居中（iOS）/ 靠左（M3 top app bar 规约）
         boolean shelfHairline;       // 收起态是否画顶栏 hairline（iOS scroll edge）
+        /** 0.9.183：大标题下的「语言专属结构件」。
+         *  0 = 无（墨读） / 1 = M3 Expressive 筛选 chips / 2 = iOS 大标题下搜索框。
+         *  这是三套语言在书架首屏上唯一「只有自己有」的组件，不是换颜色。 */
+        int     shelfHeaderStyle;
     }
 
     /**
@@ -602,21 +746,23 @@ final class DesignSpec {
             case MATERIAL:
                 fillMaterial(dark);
                 break;
-            case LIQUID:
-                fillLiquid(dark);
+            case MONOLITH:
+                fillMonolith(dark);
                 break;
             case MODOU:
             default:
                 fillModou(dark);
                 break;
         }
-        gallery = new Gallery();
-        switch (lang) {
+        // 0.9.184：用户选了强调色就在派生 tonal 之前覆盖 —— 这样 M3 的 tonal palette、
+        // 导航选中色、系统蓝都会跟着新色走，而不是只改一处强调色。
+        applyAccent(dark);
+        gallery = new Gallery();        switch (lang) {
             case MATERIAL:
                 fillGalleryMaterial(gallery, dark);
                 break;
-            case LIQUID:
-                fillGalleryLiquid(gallery, dark);
+            case MONOLITH:
+                fillGalleryMonolith(gallery, dark);
                 break;
             case MODOU:
             default:
@@ -628,21 +774,56 @@ final class DesignSpec {
             case MATERIAL:
                 fillPaperGalleryMaterial(paperGallery, dark);
                 break;
-            case LIQUID:
-                fillPaperGalleryLiquid(paperGallery, dark);
+            case MONOLITH:
+                fillPaperGalleryMonolith(paperGallery, dark);
                 break;
             case MODOU:
             default:
                 fillPaperGalleryModou(paperGallery, dark);
                 break;
         }
+        // 0.9.184：两个画廊页自己的强调色（选中标记 / 主按钮 / 取消文字）也要跟着换，
+        // 否则会出现「内容变青了、底下那颗应用主题按钮还是紫色」。
+        if (sAccent != 0) {
+            int base = accent;
+            gallery.selectColor = base;
+            gallery.selectFill = alpha(base, 0x1F);
+            gallery.primaryBtnColor = base;
+            gallery.primaryBtnText = onAccent;
+            paperGallery.selectColor = base;
+            paperGallery.selectFill = alpha(base, 0x1F);
+            paperGallery.primaryBtnColor = base;
+            paperGallery.primaryBtnText = onAccent;
+        }
         // Stage 3：语义弹层 / 按钮族 / 同心圆角 / 全局 spring 三套一起定稿（集中对照）
         fillStage3();
         // A1/B3：三套基础色板定稿后再派生 tonal palette、state layer、system 色表
         deriveTokens();
+        // iOS 的系统蓝在 deriveTokens 里被写回固定值；用户自定义过就跟着强调色走
+        if (sAccent != 0 && lang == Lang.MONOLITH) sysBlue = accent;
         // A8：15 档官方字阶统一派生所有排版字段（墨读取值逐项对齐 0.9.162，零回归）
         type = createTypeScale(lang);
         applyTypeScale();
+    }
+
+    /**
+     * 强调色覆盖（0.9.184）：只换「强调色族」这几个 token，材质 / 形状 / 排版保持各语言原样。
+     *
+     * <p>必须跑在 {@code deriveTokens()} 之前 —— M3 的 tonal palette 是从主色派生的，
+     * 先换色再生派生，整页的色调分层才会跟着新强调色走，而不是只有一枚按钮变色。
+     */
+    private void applyAccent(boolean dark) {
+        if (sAccent == 0) return;
+        int base = dark ? brighten(sAccent, 0.30f) : sAccent;
+        accent = base;
+        onAccent = luminance(base) > 0.55f ? 0xFF14171C : 0xFFFFFFFF;
+        container = alpha(base, 0x24);
+        onContainer = base;
+        // 导航选中药丸（M3 active indicator）取的是 container 的快照，这里同步
+        if (navIndicatorColor != 0) navIndicatorColor = container;
+        // 导航选中色与各自默认逻辑保持一致：M3 用 onContainer、iOS 用 accent
+        if (lang == Lang.MATERIAL) navOnColor = onContainer;
+        if (lang == Lang.MONOLITH) navOnColor = accent;
     }
 
     /**
@@ -688,7 +869,7 @@ final class DesignSpec {
                 actionSheetItemSp = 16f;
                 concentric = false;                // M3 用 shape scale，非同心递减
                 // A6：全圆胶囊、labelLarge 500 近似 medium、40dp 高、64dp 最小宽、elevation 0
-                buttonHeightDp = 40;
+                buttonHeightDp = 48;
                 buttonLabelSp = 14f;
                 buttonWeight = 2;
                 buttonMinWidthDp = 64;
@@ -697,7 +878,7 @@ final class DesignSpec {
                 overshoot = 1.06f;                 // expressive spring 轻微过冲
                 break;
             }
-            case LIQUID: {
+            case MONOLITH: {
                 // B7：iOS alert = 270dp 居中 / 14dp / 标题+正文居中 / 分隔线按钮 / 无把手
                 dialogSupportSp = 13f;
                 dialogBtnHeightDp = 44;
@@ -706,7 +887,7 @@ final class DesignSpec {
                 // B7：iOS Action Sheet = 独立「取消」组 + 分组圆角 14dp + 57dp 行 + destructive
                 actionSheetSeparateCancel = true;
                 actionSheetRowDp = 57;
-                actionSheetGroupRadiusDp = 14;
+                actionSheetGroupRadiusDp = 16;
                 actionSheetCancelGapDp = 8;
                 actionSheetTitleSp = 13f;
                 actionSheetItemSp = 20f;           // iOS Action Sheet 行文字 20sp
@@ -716,7 +897,7 @@ final class DesignSpec {
                 // B2：concentric 圆角（内圆角 = 外圆角 − 内边距）
                 concentric = true;
                 concentricInsetDp = 4;
-                buttonHeightDp = 44;
+                buttonHeightDp = 50;
                 buttonLabelSp = 17f;
                 buttonWeight = 0;                  // iOS 按钮 Regular
                 buttonMinWidthDp = 0;
@@ -832,6 +1013,37 @@ final class DesignSpec {
         bookTagCornerDp = 999f; bookTagStroke = false; bookTagFill = 0;
         bookActionCornerDp = 18f; bookActionStyle = 0; bookActionBg = 0;
         bookCardHairline = true; bookFabStyle = 0; bookTocBarCornerDp = 10f;
+        // 导入页 / 本地书页：墨读逐像素保持 0.9.171 —— 26sp 衬线标题、两张 16dp 圆角卡、
+        // 填充 + 描边两颗按钮、46dp 顶栏 + 玻璃文字胶囊、独立小卡列表（12dp / 8dp 间距）、
+        // 描边圆＋、虚线圆空态、底部卡片式多选条。style=0 时两页全部走原代码路径。
+        ioStyle = 0;
+        ioTitleSp = 26f; ioTitleWeight = 1; ioTitleSerif = true;
+        ioIntroSp = 13f; ioFootSp = 12f;
+        ioCardCornerDp = 16; ioCardGapDp = 12;
+        ioCardPadH = 16; ioCardPadT = 14; ioCardPadB = 16;
+        ioCardBg = 0; ioRowChevron = false; ioRowHDp = 0;
+        ioBtnHDp = 0;
+        localHeadHDp = 46; localNavTitleSp = 21f; localNavTitleWeight = 1;
+        localLargeTitle = false; localLargeTitleSp = 21f; localHeadAction = 0; localSubSp = 12f;
+        localRowStyle = 0; localRowCornerDp = 12; localRowGapDp = 8;
+        localRowPadH = 10; localRowPadV = 10; localRowMinHDp = 0;
+        localNameSp = 15f; localNameWeight = 0; localTagSp = 12.5f;
+        localIconStyle = 0; localIconDp = 0; localIconCornerDp = 0; localGlyphDp = 0;
+        localTagStyle = 0; localAddStyle = 0; localEmptyStyle = 0; localSelBarStyle = 0;
+        localDividerStartDp = 0;
+        // 小控件：墨读原值（999 胶囊 / 12.5sp / 12·6 内边距 / 不描边）
+        chipStyle = 0; chipCornerDp = 999; chipLabelSp = 12.5f;
+        chipPadHDp = 12; chipPadVDp = 6; chipStroke = false;
+        chipFill = 0; chipActiveFill = 0;
+        // 阅读页工具坞：墨读原值
+        rdDockStyle = 0; rdDockCornerDp = 22; rdDockTopOnly = false;
+        rdDockPadH = 8; rdDockPadV = 6; rdDockLabelSp = 10.5f; rdDockLabelWeight = 0;
+        rdDockIconDp = 20; rdDockItemPadV = 6; rdDockItemCornerDp = 14;
+        rdDockIndicator = false; rdDockMetaSp = 12f;
+        // 阅读页其余控件：墨读原值
+        rdSeekStyle = 0; rdSeekTrackDp = 8; rdSeekThumbDp = 8; rdSeekGlow = true; rdSeekStopDots = false;
+        rdTtsTitleSp = 13.5f; rdTtsTitleWeight = 1; rdTtsLabelSp = 11; rdTtsPlayDp = 40; rdTtsPlayFill = false;
+        rdTocTitleSp = 15; rdTocSubSp = 12; rdTocPadV = 11; rdTocDividerStartDp = 0; rdTocSelectedFill = false;
 
         // 弹层：底部居中的悬浮玻璃浮岛
         sheetAnchor = SheetAnchor.FLOAT_BOTTOM;
@@ -851,7 +1063,9 @@ final class DesignSpec {
 
         // 导航：悬浮胶囊浮岛（独立窗口 + 系统模糊）
         navStyle = NavStyle.FLOATING_ISLAND;
-        navHeightDp = 50;
+        // 0.9.185：50 → 58。浮岛窗口高度按这个值给，50dp 时「图标 + 文字」几乎顶满，
+        // 在新机型上文字会贴到玻璃下缘、看着像没被包进去。
+        navHeightDp = 58;
         navBottomGapDp = 8;
         navSideGapDp = 28;
         navCapWidthDp = 420;
@@ -933,11 +1147,12 @@ final class DesignSpec {
         text = d ? 0xFFE6E0E9 : 0xFF1D1B20;
         sub = d ? 0xFFCAC4D0 : 0xFF49454F;
         line = d ? 0xFF36343B : 0xFFE7E0EC;
-        accent = d ? 0xFFD0BCFF : 0xFF6750A4;
-        onAccent = d ? 0xFF381E72 : 0xFFFFFFFF;
+        // 0.9.193：M3 默认强调色由紫改蓝（与 iOS / 墨读一致，全语言默认蓝色）
+        accent = d ? 0xFF9DB2FF : 0xFF3B6FE0;
+        onAccent = d ? 0xFF0A2A6B : 0xFFFFFFFF;
         danger = d ? 0xFFF2B8B5 : 0xFFB3261E;
-        container = d ? 0xFF4F378B : 0xFFEADDFF;
-        onContainer = d ? 0xFFEADDFF : 0xFF21005D;
+        container = d ? 0xFF3C4C8A : 0xFFDDE4FF;
+        onContainer = d ? 0xFFDCE2FF : 0xFF00246B;
         divider = line;
         ripple = alpha(text, 0x14);
         glassBase = surfaceHigh;
@@ -950,13 +1165,13 @@ final class DesignSpec {
         // M3 shape scale：普通圆弧、卡片 12dp、弹层 28dp、按钮全圆
         cornerXs = 4;
         cornerS = 8;
-        cornerM = 12;
+        cornerM = 20;
         cornerL = 28;
         cornerSheet = 28;
         cornerAlert = 28;
-        cornerCard = 12;
+        cornerCard = 20;
         cornerButton = 999;
-        cornerMenu = 8;
+        cornerMenu = 12;
         squircle = false;
         capsuleButton = true;
         cardStrokeDp = 0f;
@@ -991,17 +1206,18 @@ final class DesignSpec {
         // 不画组内分隔线（list item 靠 surface 层级区分，官方即如此）、组卡更圆、
         // 行尾不画 disclosure（M3 list 用 trailing supporting text / icon）。
         listIconStyle = 2;
-        listIconSizeDp = 40; listIconCornerDp = 20; listIconGlyphDp = 22; listIconGapDp = 16;
+        // 0.9.204：40dp 圆形图标 + 16dp gap 把行撑得又空又挤，收到 32/16/18/12。
+        listIconSizeDp = 32; listIconCornerDp = 16; listIconGlyphDp = 18; listIconGapDp = 12;
         listChevron = false; listChevronSp = 0f;
         listGroupInsetDp = 0; listDividerStartDp = 0; listNoDivider = true;
-        listCardCornerDp = 20; listRowMinHDp = 64;
+        listCardCornerDp = 24; listRowMinHDp = 56;   // 0.9.204：配合单行说明收行高
 
         // 动态项构图（M3 Expressive）：40dp tonal 圆 + accent 单色首字，
         // 每个书源一张独立 filled card（8dp 间距、16dp 圆角、不描边），
         // 组内不画分隔线——M3 list item 靠 surface 层级区分，官方即如此。
         itemBadgeStyle = 2;
         itemBadgeSizeDp = 40; itemBadgeCornerDp = 20; itemBadgeTextSp = 17f; itemBadgeGapDp = 16;
-        itemCardGapDp = 8; itemCardCornerDp = 16; itemCardNoStroke = true;
+        itemCardGapDp = 10; itemCardCornerDp = 20; itemCardNoStroke = true;
         itemDividerStartDp = 0;
 
         // 搜索页构图（M3 Expressive）：search bar = 56dp 全圆胶囊 + surfaceContainerHigh
@@ -1011,7 +1227,7 @@ final class DesignSpec {
         searchBarStyle = 2;
         searchBarHDp = 56; searchBarCornerDp = 28; searchBarIconDp = 24;
         searchBarTextSp = 16f; searchBarElevDp = 3f;
-        searchCoverCornerDp = 12; searchHitCardCornerDp = 16; searchHitCardFilled = true;
+        searchCoverCornerDp = 16; searchHitCardCornerDp = 20; searchHitCardFilled = true;
         searchHitGapDp = 8; searchHitDividerStartDp = 0;
         searchTagCornerDp = 8f; searchTagStroke = true;
         // 焦点态：M3 search bar 聚焦时 elevation 3dp→6dp、底色 High→Highest（tonal 升一级）。
@@ -1023,8 +1239,40 @@ final class DesignSpec {
         bookCoverWDp = 112; bookCoverCornerDp = 16; bookCoverElevDp = 6f;
         bookCoverPlace = 2; bookTitleSp = 26f; bookTitleFace = 2;
         bookTagCornerDp = 8f; bookTagStroke = true; bookTagFill = 2;
-        bookActionCornerDp = 12f; bookActionStyle = 2; bookActionBg = 2;
+        bookActionCornerDp = 16f; bookActionStyle = 2; bookActionBg = 2;
         bookCardHairline = false; bookFabStyle = 2; bookTocBarCornerDp = 8f;
+        // 导入页 / 本地书页（M3 Expressive）：顶栏 64dp（22sp Medium 标题 + 40dp 图标钮）、
+        // 每项一张 surfaceContainerLow filled card（12dp / 8dp 间距）、卡内 title 16sp +
+        // 40dp Filled / Outlined 按钮（20dp 全圆）、行首 40dp tonal 圆图标、文件行 64dp。
+        ioStyle = 2;
+        ioTitleSp = 22f; ioTitleWeight = 2; ioTitleSerif = false;
+        ioIntroSp = 14f; ioFootSp = 12f;
+        ioCardCornerDp = 20; ioCardGapDp = 10;
+        ioCardPadH = 16; ioCardPadT = 16; ioCardPadB = 16;
+        ioCardBg = 2; ioRowChevron = false; ioRowHDp = 0;
+        ioBtnHDp = 40;
+        localHeadHDp = 64; localNavTitleSp = 22f; localNavTitleWeight = 2;
+        localLargeTitle = false; localLargeTitleSp = 22f; localHeadAction = 2; localSubSp = 12f;
+        localRowStyle = 2; localRowCornerDp = 20; localRowGapDp = 10;
+        localRowPadH = 16; localRowPadV = 14; localRowMinHDp = 64;
+        localNameSp = 16f; localNameWeight = 2; localTagSp = 11f;
+        localIconStyle = 2; localIconDp = 40; localIconCornerDp = 999; localGlyphDp = 22;
+        localTagStyle = 2; localAddStyle = 2; localEmptyStyle = 2; localSelBarStyle = 2;
+        localDividerStartDp = 0;
+
+        // M3：8dp 描边 chip、11sp、9·5 内边距；选中用 secondaryContainer tonal
+        chipStyle = 2; chipCornerDp = 8; chipLabelSp = 11f;
+        chipPadHDp = 9; chipPadVDp = 5; chipStroke = true;
+        chipFill = 2; chipActiveFill = 2;
+        // 阅读页工具坞（M3）：28dp 仅上两角、tonal 实底、12sp Medium、图标后指示器
+        rdDockStyle = 2; rdDockCornerDp = 28; rdDockTopOnly = true;
+        rdDockPadH = 8; rdDockPadV = 8; rdDockLabelSp = 12f; rdDockLabelWeight = 2;
+        rdDockIconDp = 24; rdDockItemPadV = 8; rdDockItemCornerDp = 999;
+        rdDockIndicator = true; rdDockMetaSp = 12f;
+        // 滑杆 / TTS / 目录（M3）：细轨 + 端点停靠点、48dp 播放键铺 tonal 底、当前章整行 tonal
+        rdSeekStyle = 2; rdSeekTrackDp = 4; rdSeekThumbDp = 9; rdSeekGlow = false; rdSeekStopDots = true;
+        rdTtsTitleSp = 14; rdTtsTitleWeight = 2; rdTtsLabelSp = 12; rdTtsPlayDp = 48; rdTtsPlayFill = true;
+        rdTocTitleSp = 16; rdTocSubSp = 12; rdTocPadV = 12; rdTocDividerStartDp = 0; rdTocSelectedFill = true;
 
         // 表单/面板贴底全宽；确认走屏幕居中 Dialog；列表贴底全宽
         sheetAnchor = SheetAnchor.BOTTOM_FULL;
@@ -1036,7 +1284,7 @@ final class DesignSpec {
         sheetLandRatio = 0.56f;
         sheetBlur = false;
         sheetHandle = true;
-        sheetDraggable = false;      // M3 的 handle 只是指示，不可下拉关闭
+        sheetDraggable = true;       // Modal Bottom Sheet 可跟手下滑关闭
         sheetTitleDivider = false;
         sheetRadiusDp = 28;
         buttonStyle = ButtonStyle.TEXT_RIGHT;
@@ -1053,11 +1301,11 @@ final class DesignSpec {
         navDivider = false;
         navBlur = false;
         navFloating = false;
-        navFootDp = 80;
+        navFootDp = 96;
 
         menuStyle = MenuStyle.FILLED_ANCHOR;
-        menuCornerDp = 8;
-        menuRowHeightDp = 48;
+        menuCornerDp = 12;
+        menuRowHeightDp = 52;
         menuBlur = false;
 
         // 导航细化：贴底 Navigation Bar = 实色 surfaceContainer + 64×32 primaryContainer
@@ -1116,205 +1364,187 @@ final class DesignSpec {
         durLong = 400;
     }
 
-    /** Apple iOS 26 / HIG：连续曲率分组表格、系统蓝、alert/actionSheet/pageSheet 分流、Tab Bar */
-    private void fillLiquid(boolean d) {
-        bg = d ? 0xFF000000 : 0xFFF2F2F7;
-        surface = d ? 0xFF1C1C1E : 0xFFFFFFFF;
-        surfaceHigh = d ? 0xFF2C2C2E : 0xFFFFFFFF;
-        surfaceLow = d ? 0xFF000000 : 0xFFF2F2F7;
-        text = d ? 0xFFFFFFFF : 0xFF000000;
-        sub = d ? 0x99EBEBF5 : 0x993C3C43;
-        line = d ? 0xA6545458 : 0x4A3C3C43;
-        accent = d ? 0xFF0A84FF : 0xFF007AFF;
+    /** 极简·纪 (Monolith)：莫兰迪色、大圆角卡片、悬浮药丸底栏、纯线条图标 */
+    private void fillMonolith(boolean d) {
+        // 1. 色彩体系（基于开元阅读的灰蓝底与高亮卡片）
+        bg = d ? 0xFF1A1C23 : 0xFFF7F8FA; // 深色为灰蓝黑，浅色为冷灰白
+        surface = d ? 0xFF242731 : 0xFFFFFFFF; // 卡片色
+        surfaceHigh = d ? 0xFF2E323E : 0xFFFFFFFF;
+        surfaceLow = d ? 0xFF1E2029 : 0xFFF0F2F5;
+        text = d ? 0xFFE2E4E9 : 0xFF1A1C23;
+        sub = d ? 0xFF9AA0B0 : 0xFF7A8299;
+        line = d ? 0xFF333744 : 0xFFE5E8EF;
+        accent = d ? 0xFF8AA4F0 : 0xFF5C7CE0; // 柔和蓝
         onAccent = 0xFFFFFFFF;
-        danger = d ? 0xFFFF453A : 0xFFFF3B30;
-        container = alpha(accent, 0x1F);
+        danger = d ? 0xFFFF5252 : 0xFFD32F2F;
+        container = alpha(accent, 0x24);
         onContainer = accent;
-        divider = line;
-        ripple = d ? 0x14FFFFFF : 0x14000000;
-        glassBase = d ? 0xB02C2C2E : 0xD9FFFFFF;
-        glassVeil = d ? 0x14FFFFFF : 0x4DFFFFFF;
-        glassRim = 0x66FFFFFF;
+        divider = alpha(text, 0x0D);
+        ripple = alpha(text, 0x14);
+        
+        // 极简风拒绝毛玻璃，全部用实色
+        glassBase = surfaceHigh;
+        glassVeil = 0x00000000;
+        glassRim = 0x00000000;
         scrimColor = 0xFF000000;
         scrim = 0.40f;
         gradientBackdrop = false;
 
-        // iOS 连续曲率：分组 14dp、alert 14dp、page sheet 20dp、控件全圆
-        cornerXs = 3;
-        cornerS = 10;
-        cornerM = 14;
-        cornerL = 20;
-        cornerSheet = 20;
-        cornerAlert = 14;
-        cornerCard = 14;
-        cornerButton = 999;
-        cornerMenu = 14;
+        // 2. 形状：全部为大圆角、胶囊
+        cornerXs = 4;
+        cornerS = 12;
+        cornerM = 24;      // 卡片大圆角
+        cornerL = 28;
+        cornerSheet = 28;
+        cornerAlert = 24;
+        cornerCard = 24;
+        cornerButton = 999; // 全圆胶囊
+        cornerMenu = 20;
         squircle = true;
         capsuleButton = true;
         cardStrokeDp = 0f;
-        cardElevationDp = 0f;
+        cardElevationDp = 0f; // 扁平化，不要阴影
 
-        pageTitleSp = 34f;
-        sheetTitleSp = 17f;
-        rowTitleSp = 17f;
+        // 3. 排版（主字号会被下面的 applyTypeScale 覆盖）
+        pageTitleSp = 28f; 
+        sheetTitleSp = 20f;
+        rowTitleSp = 16f;
         rowHintSp = 13f;
-        groupTitleSp = 13f;
-        navLabelSp = 10f;
-        bodySp = 17f;
+        groupTitleSp = 15f;
+        navLabelSp = 11f;
+        bodySp = 16f;
         pageTitleSerif = false;
         sheetTitleSerif = false;
-        sheetTitleCenter = true;
+        sheetTitleCenter = false;
         pageTitleTracking = -0.01f;
         pageTitleWeight = 1;
         sheetTitleWeight = 1;
 
-        rowPadH = 16;
-        rowPadV = 11;
-        panelPadH = 16;
-        panelPadT = 12;
-        panelPadB = 20;
+        // 4. 度量与列表行（大间距，去线化）
+        rowPadH = 20;
+        rowPadV = 16;
+        panelPadH = 20;
+        panelPadT = 16;
+        panelPadB = 24;
         topInset = 16;
-        rowMinHeight = 44;
-        groupGap = 32;
-        dividerInset = 16;
-        dividerDp = 1;       // 0.5px 用 1px + 低 alpha 近似
+        rowMinHeight = 56;
+        groupGap = 24; 
+        dividerInset = 20;
+        dividerDp = 1;
 
-        // 列表行构图（iOS 26）：29dp 彩色圆角方块 + 白色 SF 风格 glyph、
-        // 56dp 行、缩进分隔线、灰色值 + disclosure ›、组卡左右内缩 16dp。
-        // 这就是 iOS「设置」的标志性构图，此前三套语言一直没有。
-        listIconStyle = 1;
-        listIconSizeDp = 29; listIconCornerDp = 7; listIconGlyphDp = 18; listIconGapDp = 12;
-        listChevron = true; listChevronSp = 15f;
-        // 内缩只加 8dp：页面本身已有 topInset=16dp（独立页 LargeTitleHeader.content），
-        // 嵌入式还有 paneBox 12dp + root 16dp。叠到 16dp 会变成 32~44dp，卡片过窄、
-        // 长说明更容易被截断。8dp 是「iOS 比另外两套多内缩一点」的语言差异，够读。
-        listGroupInsetDp = 8; listDividerStartDp = 56; listNoDivider = false;
-        listCardCornerDp = 12; listRowMinHDp = 56;
+        listIconStyle = 2; 
+        listIconSizeDp = 32; listIconCornerDp = 16; listIconGlyphDp = 18; listIconGapDp = 16;
+        listChevron = true; listChevronSp = 16f;
+        listGroupInsetDp = 0; listDividerStartDp = 20; listNoDivider = false;
+        listCardCornerDp = 24; listRowMinHDp = 56;
 
-        // 动态项构图（iOS 26）：32dp 彩色圆角方块 + 白色首字（system color 按
-        // 名称 hash），分组内仍是连续白卡、行间画从字母块之后起的 0.5px 缩进线，
-        // 与固定功能行的 56dp 左缩线同一节奏。间距 0 = 紧贴分组，不做成独立卡。
-        itemBadgeStyle = 1;
-        itemBadgeSizeDp = 32; itemBadgeCornerDp = 8; itemBadgeTextSp = 15f; itemBadgeGapDp = 12;
-        itemCardGapDp = 0; itemCardCornerDp = 12; itemCardNoStroke = false;
-        itemDividerStartDp = 56;
+        // 5. 导航栏（悬浮胶囊 + 药丸底座，完全借鉴开元阅读）
+        navStyle = NavStyle.FLOATING_ISLAND;
+        navHeightDp = 64;
+        navBottomGapDp = 16; // 底部留白
+        navSideGapDp = 16;
+        navCapWidthDp = 360;
+        navIconDp = 22;
+        navCornerDp = 32; // 胶囊圆角
+        navIndicator = true; // 开启选中底部的药丸
+        navDivider = false;
+        navBlur = false; // 纯实色
+        navFloating = true;
+        navFootDp = 96;
+        
+        navBarColor = d ? 0xFF242731 : 0xFFFFFFFF;
+        navOnColor = accent;
+        navOffColor = sub;
+        navIndicatorColor = alpha(accent, 0x1F); // 药丸底座颜色（淡蓝）
+        navIndicatorWDp = 56; 
+        navIndicatorHDp = 32;
+        navDividerColor = 0;
+        navScaleSelected = false;
+        navBarElevationDp = 0;
+        navGlassMaterial = false;
+        navGlassHighlight = 0;
+        navSurfaceTint = 0;
+        navIconLine = new int[]{R.drawable.ic_nav_shelf_line, R.drawable.ic_nav_source_line,
+                R.drawable.ic_nav_rule_line, R.drawable.ic_nav_gear_line};
+        navIconFill = navIconLine;
 
-        // 搜索页构图（iOS 26）：search field = 36dp / 10dp 圆角矩形 / tertiarySystemFill
-        // + 17sp + 小放大镜；大标题走 A8 34 Bold；历史词行彩色方块时钟 + 缩进线 + ›；
-        // 结果行透明 + 从封面之后起的 0.5px 分隔线（continuous grouped list），标签全圆胶囊。
-        searchBarStyle = 1;
-        searchBarHDp = 36; searchBarCornerDp = 10; searchBarIconDp = 17;
-        searchBarTextSp = 17f; searchBarElevDp = 0f;
-        searchCoverCornerDp = 8; searchHitCardCornerDp = 0; searchHitCardFilled = false;
-        searchHitGapDp = 0; searchHitDividerStartDp = 88;
-        searchTagCornerDp = 999f; searchTagStroke = false;
-        // 焦点态：iOS 未聚焦「放大镜+占位符」整体居中，聚焦靠左 + 右侧滑入蓝色 Cancel。
-        searchFocusStyle = 1; searchFocusElevDp = 0f;
-        // 书详情页（iOS 26）：封面 92dp / 10dp 连续圆角、无 elevation、
-        // 书名 28sp SF Bold、标签全圆 systemFill 胶囊、四个动作收进一张
-        // Inset Grouped 连续分组卡、卡内保留缩进细线、FAB 蓝色填充胶囊。
-        bookStyle = 1;
-        bookCoverWDp = 92; bookCoverCornerDp = 10; bookCoverElevDp = 0f;
-        bookCoverPlace = 1; bookTitleSp = 28f; bookTitleFace = 1;
-        bookTagCornerDp = 999f; bookTagStroke = false; bookTagFill = 1;
-        bookActionCornerDp = 14f; bookActionStyle = 1; bookActionBg = 1;
-        bookCardHairline = true; bookFabStyle = 1; bookTocBarCornerDp = 999f;
+        // 6. 菜单
+        menuStyle = MenuStyle.FILLED_ANCHOR;
+        menuCornerDp = 20;
+        menuRowHeightDp = 52;
+        menuBlur = false;
+        menuSurface = surface;
+        menuScrim = 0x40000000;
+        menuRimDp = 0f;
+        menuElevationDp = 0;
+        menuPopoverArrow = false;
+        menuTitleSp = 16f;
+        menuHintSp = 13f;
+        menuItemIconDp = 20;
+        menuIconLeading = true;
+        menuDividerInsetDp = 20;
+        menuStateLayer = alpha(text, 0x0A);
+        menuHighlight = alpha(accent, 0x15);
+        menuArrowDp = 0;
+        menuRimLight = 0;
+        durMenuIn = 200;
+        durMenuOut = 150;
+        durMenuSub = 250;
+        menuRowPadLDp = 20;
+        menuRowPadRDp = 20;
+        menuRowPadVDp = 14;
+        menuRowRadiusDp = 16f;
+        menuDividerColor = line;
 
-        // 表单贴底全宽 page sheet；确认居中 alert；列表贴底内缩 action sheet
-        sheetAnchor = SheetAnchor.BOTTOM_FULL;
+        // 7. 弹层
+        sheetAnchor = SheetAnchor.FLOAT_BOTTOM;
         confirmAnchor = SheetAnchor.CENTER;
-        listAnchor = SheetAnchor.BOTTOM_INSET;
-        sheetWidthDp = 270;
-        sheetMaxWidthDp = 420;
-        sheetSideMarginDp = 8;
-        sheetLandRatio = 0.56f;
+        listAnchor = SheetAnchor.FLOAT_BOTTOM;
+        sheetWidthDp = 320;
+        sheetMaxWidthDp = 400;
+        sheetSideMarginDp = 16;
+        sheetLandRatio = 0.50f;
         sheetBlur = false;
         sheetHandle = true;
         sheetDraggable = true;
-        sheetTitleDivider = true;
-        sheetRadiusDp = 20;
-        buttonStyle = ButtonStyle.IOS_STACK;
-        material = Material.LIQUID;
+        sheetTitleDivider = false;
+        sheetRadiusDp = 28;
+        buttonStyle = ButtonStyle.FILLED_PAIR;
+        material = Material.GLASS; 
 
-        navStyle = NavStyle.IOS_TAB_BAR;
-        navHeightDp = 49;
-        navBottomGapDp = 0;
-        navSideGapDp = 0;
-        navCapWidthDp = 0;
-        navIconDp = 25;
-        navCornerDp = 0;
-        navIndicator = false;
-        navDivider = true;
-        navBlur = false;
-        navFloating = false;
-        navFootDp = 49;
-
-        menuStyle = MenuStyle.LIQUID_POPOVER;
-        menuCornerDp = 14;
-        menuRowHeightDp = 44;
-        // 0.9.159 修订：Liquid Glass 的本质是「折射 / 模糊背后内容」，popover 必须挂
-        // 系统跨窗口实时模糊才像；原规格表写 false 是把 iOS 弹层 sheet 的「材质层模拟」
-        // 一并套到了菜单上。菜单窗口本就是卡片尺寸独立窗口，挂模糊正是 0.9.144 验证过的
-        // 稳定路径，不重写骨架。M3 仍为 false（实色填充列表，规范明确无模糊）。
-        menuBlur = true;
-
-        // 导航细化：贴底 Tab Bar = 半透明材质 + 顶部 0.5px 分隔线；
-        // 选中仅 tint 变系统蓝，无背景块、无放大。
-        navBarColor = glassBase;
-        navOnColor = accent;
-        navOffColor = sub;
-        navIndicatorColor = 0;
-        navIndicatorWDp = 0;
-        navIndicatorHDp = 0;
-        navDividerColor = line;
-        navScaleSelected = false;
-        navBarElevationDp = 0;
-        // iOS 26 Tab Bar = Liquid Glass 材质：半透基色 + 顶部凝光 + 边缘泛光（不是平涂色块）；
-        // 选中只 tint 变系统蓝，图标不换 filled，用 SF Symbols 一套。
-        navGlassMaterial = true;
-        navGlassHighlight = d ? 0x3AFFFFFF : 0x8CFFFFFF;
-        navSurfaceTint = 0;
-        navIconLine = new int[]{R.drawable.ic_sf_shelf, R.drawable.ic_sf_source,
-                R.drawable.ic_sf_rule, R.drawable.ic_sf_gear};
-        navIconFill = navIconLine;
-
-        // 菜单细化：液态玻璃 popover，带指向锚点的小箭头 + 镜面高光描边。
-        menuSurface = glassBase;
-        menuScrim = 0x14000000;
-        menuRimDp = 1f;
-        menuElevationDp = 0;
-        menuPopoverArrow = true;
-        // 高还原：iOS context menu = 14dp 连续曲率、44dp 行、body 17sp、
-        // 22dp trailing SF 风格图标、0.5px 左缩分隔线、行整体浅灰高亮、spring 阻尼（不过冲）。
-        menuTitleSp = 17f;
-        menuHintSp = 13f;
-        menuItemIconDp = 22;
-        menuIconLeading = false;             // iOS 图标右置
-        menuDividerInsetDp = 16;
-        menuStateLayer = alpha(text, 0x14);  // 行整体浅灰高亮
-        menuHighlight = alpha(accent, 0x1C); // 选中：系统蓝淡染
-        menuArrowDp = 10;
-        menuRimLight = d ? 0x59FFFFFF : 0x99FFFFFF;  // 镜面高光描边
-        durMenuIn = 350;
-        durMenuOut = 280;
-        durMenuSub = 340;
-        menuRowPadLDp = 16;                  // iOS context menu 16dp 边距
-        menuRowPadRDp = 16;
-        menuRowPadVDp = 5;                   // 44dp 行高
-        menuRowRadiusDp = 10f;
-        menuDividerColor = line;             // iOS separator（非不透明）
-
-        glassMaterialVeil = glassBase;
-        glassSolidFallback = surfaceHigh;
-
-        durShort = 350;
-        durMed = 400;
-        durLong = 450;
+        // 动效
+        spring = true;
+        overshoot = 0f;
+        durShort = 200;
+        durMed = 300;
+        durLong = 400;
+        
+        // 覆盖阶段3字段
+        dialogSupportSp = 14f;
+        dialogBtnHeightDp = 48;
+        dialogElevationDp = 0;
+        dialogTitleCenter = false;
+        actionSheetSeparateCancel = false;
+        actionSheetRowDp = 56;
+        actionSheetGroupRadiusDp = 24;
+        actionSheetCancelGapDp = 0;
+        actionSheetTitleSp = 14f;
+        actionSheetItemSp = 16f;
+        pageSheetPeek = false;
+        concentric = false;
+        buttonHeightDp = 48;
+        buttonLabelSp = 16f;
+        buttonWeight = 1;
+        buttonMinWidthDp = 64;
+        sheetEnterAnim = true;
     }
 
     /* ==================== 画廊页三套定稿数值 ==================== */
 
     private static void fillGalleryModou(Gallery g, boolean d) {
+        g.galleryStyle = 0;
+        g.galleryGridStyle = 0;
+        g.galleryWideAction = false;
         g.eyebrow = "主题外观";
         g.title = "阅读，也有你的风格";
         g.subtitle = "从流体玻璃 · 到诗意山水";
@@ -1348,7 +1578,9 @@ final class DesignSpec {
         g.selectFill = d ? 0x243F6BF0 : 0x182F6BF0;
         g.selectStrokeDp = 1.6f;
         g.selectIndicator = false;
-        g.barColor = d ? 0xB01A201C : 0xCCFFFFFF;
+        // 0.9.181：底部动作条原为 80% 白，滚动卡片的文字会从玻璃里透出来形成「重影字」。
+        // 提遮光度（保留 rim / 凝光，玻璃感不丢），文字不再和卡片标签叠在一起。
+        g.barColor = d ? 0xE61A201C : 0xF2FFFFFF;
         g.barRim = d ? 0x26FFFFFF : 0x66FFFFFF;
         g.barGlass = true;
         g.primaryBtnColor = d ? 0xFF7FA6D9 : 0xFF2F6BF0;
@@ -1372,6 +1604,10 @@ final class DesignSpec {
 
     /** M3 Expressive：surface 纯色、Medium 大标题、Filled card、indicator、全圆 Filled button、spring */
     private static void fillGalleryMaterial(Gallery g, boolean d) {
+        // M3：large top app bar + 两列 filled 卡网格 + 通栏 Filled 按钮
+        g.galleryStyle = 2;
+        g.galleryGridStyle = 2;
+        g.galleryWideAction = true;
         g.eyebrow = "主题外观";
         g.title = "让界面，随你而变";
         g.subtitle = "形状、色彩与动效，都由你定义";
@@ -1387,7 +1623,7 @@ final class DesignSpec {
         g.modeNames = new String[]{"浅色", "深色", "跟随系统"};
         g.modeHints = new String[]{"明亮", "沉静", "自动"};
         g.taglines = TAGLINES;
-        g.titleSp = 32f;
+        g.titleSp = 28f;                               // 0.9.204：M3 画廊大标题收小
         g.titleSerif = false;
         g.titleColor = d ? 0xFFE6E0E9 : 0xFF1D1B20;
         g.titleTracking = 0f;
@@ -1398,17 +1634,18 @@ final class DesignSpec {
         g.cardRim = 0;
         g.cardRimDp = 0f;
         g.glassCard = false;
-        g.cardRadiusDp = 12f;                          // shape scale: medium
-        g.thumbRadiusDp = 12f;
-        g.selectColor = d ? 0xFFEADDFF : 0xFF21005D;  // onPrimaryContainer
-        g.selectFill = d ? 0xFF4F378B : 0xFFEADDFF;   // primaryContainer
+        g.cardRadiusDp = 24f;                          // Expressive large shape
+        g.thumbRadiusDp = 20f;
+        // 0.9.193：M3 默认强调色由紫改蓝（与全语言一致），画廊内按钮 / 选中态同步
+        g.selectColor = d ? 0xFFDCE2FF : 0xFF00246B;
+        g.selectFill = d ? 0xFF3C4C8A : 0xFFDDE4FF;
         g.selectStrokeDp = 0f;                        // 靠 indicator 药丸，不描边
         g.selectIndicator = true;
         g.barColor = d ? 0xFF211F26 : 0xFFF3EDF7;     // surfaceContainer
         g.barRim = 0;
         g.barGlass = false;
-        g.primaryBtnColor = d ? 0xFFD0BCFF : 0xFF6750A4;
-        g.primaryBtnText = d ? 0xFF381E72 : 0xFFFFFFFF;
+        g.primaryBtnColor = d ? 0xFF9DB2FF : 0xFF3B6FE0;
+        g.primaryBtnText = d ? 0xFF0A2A6B : 0xFFFFFFFF;
         g.cancelText = d ? 0xFFCAC4D0 : 0xFF49454F;
         g.btnRadiusDp = 999f;                         // M3 Filled button 全圆
         g.spring = true;
@@ -1424,13 +1661,18 @@ final class DesignSpec {
         g.shelfBigTitleFade = true;                   // 局部启用，不改全局 largeTitleScroll（三个已验收页面零回归）
         g.shelfInlineCenter = false;                  // M3 top app bar 标题靠左，不居中
         g.shelfHairline = false;                      // M3 用 tonal elevation 分层，不画 hairline
+        // M3 的结构差异放在「右下角 Expressive FAB」（ShelfActivity.buildShelfFab），
+        // 不占标题块高度；iOS 的差异是标题下搜索框，墨读两者都没有。
+        g.shelfHeaderStyle = 0;
     }
 
-    /** iOS 26：groupedBackground、Large Title Bold、Inset Grouped、hairline、系统蓝胶囊、阻尼 spring */
-    private static void fillGalleryLiquid(Gallery g, boolean d) {
+    private static void fillGalleryMonolith(Gallery g, boolean d) {
+        g.galleryStyle = 1;
+        g.galleryGridStyle = 0;
+        g.galleryWideAction = true;
         g.eyebrow = "外观";
-        g.title = "你的阅读，你的样子";
-        g.subtitle = "三种设计语言，各有各的讲究";
+        g.title = "极简风格";
+        g.subtitle = "莫兰迪配色与纯粹的版式";
         g.inUsePrefix = "正在使用 · ";
         g.allTitle = "设计语言";
         g.allHint = "轻点以预览，确认后应用";
@@ -1438,55 +1680,53 @@ final class DesignSpec {
         g.apply = "使用所选主题";
         g.aboutTitle = "关于设计语言";
         g.aboutBody = ABOUT_BODY;
-        g.footerA = "外观 · 材质 · 层级";
-        g.footerB = "三种设计语言，各有讲究";
+        g.footerA = "去边框 · 大留白 · 胶囊底座";
+        g.footerB = "极简·纪";
         g.modeNames = new String[]{"浅色", "深色", "跟随系统"};
         g.modeHints = new String[]{"明亮", "沉静", "自动"};
         g.taglines = TAGLINES;
-        g.titleSp = 34f;                               // Large Title
+        g.titleSp = 28f;
         g.titleSerif = false;
         g.titleColor = d ? 0xFFFFFFFF : 0xFF000000;
         g.titleTracking = -0.01f;
         g.titleWeight = 1;
-        g.backdropA = g.backdropB = d ? 0xFF000000 : 0xFFF2F2F7;
-        g.cardColor = d ? 0xFF1C1C1E : 0xFFFFFFFF;
+        g.backdropA = g.backdropB = d ? 0xFF1A1C23 : 0xFFF7F8FA;
+        g.cardColor = d ? 0xFF242731 : 0xFFFFFFFF;
         g.cardRim = 0;
         g.cardRimDp = 0f;
         g.glassCard = false;
-        g.cardRadiusDp = 14f;                          // iOS 26 分组圆角
-        g.thumbRadiusDp = 14f;
-        g.selectColor = d ? 0xFF0A84FF : 0xFF007AFF;  // systemBlue
-        g.selectFill = d ? 0x2A0A84FF : 0x1C007AFF;
-        g.selectStrokeDp = 0f;                        // 用蓝色 ✓ + 淡蓝高亮，不描边
+        g.cardRadiusDp = 24f;
+        g.thumbRadiusDp = 20f;
+        g.selectColor = d ? 0xFF8AA4F0 : 0xFF5C7CE0;
+        g.selectFill = alpha(g.selectColor, 0x1F);
+        g.selectStrokeDp = 0f;
         g.selectIndicator = false;
-        g.barColor = d ? 0xB02C2C2E : 0xD9FFFFFF;     // Liquid Glass 磨砂
-        g.barRim = d ? 0x3AFFFFFF : 0x8CFFFFFF;
-        g.barGlass = true;
-        g.primaryBtnColor = d ? 0xFF0A84FF : 0xFF007AFF;
+        g.barColor = d ? 0xFF242731 : 0xFFFFFFFF;
+        g.barRim = 0;
+        g.barGlass = false;
+        g.primaryBtnColor = g.selectColor;
         g.primaryBtnText = 0xFFFFFFFF;
-        g.cancelText = d ? 0x99EBEBF5 : 0x993C3C43;
+        g.cancelText = d ? 0xFF9AA0B0 : 0xFF7A8299;
         g.btnRadiusDp = 999f;
         g.spring = true;
-        g.durIn = 350;
-        g.overshoot = 0f;                             // iOS spring 带阻尼，不过冲
-        g.largeTitleScroll = true;                    // Large Title 收起为 inline + 顶栏 hairline
+        g.durIn = 300;
+        g.overshoot = 0f;
+        g.largeTitleScroll = false;
         g.appBarTonalScroll = false;
-        g.scrollEdgeDp = 96;                          // Large Title 收起为 inline 的行程
-        g.shelfChrome = true;                         // 书架工具条滚动后浮出磨砂底 + hairline
-        g.shelfChromeLand = false;                    // 横屏一行紧凑工具条，保持原样
-        // iOS 26 UINavigationBar：眉标 + 34sp Bold Large Title，收起为居中 inline + scroll edge
-        g.shelfTitleBlockDp = 100;
-        g.shelfBigTitleFade = true;
+        g.shelfChrome = false;
+        g.shelfChromeLand = false;
+        g.shelfTitleBlockDp = 0;
+        g.shelfBigTitleFade = false;
         g.shelfInlineCenter = true;
-        g.shelfHairline = true;
+        g.shelfHairline = false;
+        g.shelfHeaderStyle = 0;
     }
 
     private static final String[] TAGLINES = {
-            "流体玻璃 · 悬浮浮岛", "色调分层 · 明快弹性", "液态玻璃 · 内容优先"};
-
+            "流体玻璃 · 悬浮浮岛", "色调分层 · 明快弹性", "莫兰迪色 · 胶囊浮岛"};
     private static final String ABOUT_BODY =
             "墨读以流体玻璃与悬浮浮岛营造通透景深；Material 3 用色调分层与弹性动效组织层级；"
-                    + "iOS 26 以液态玻璃和分组表格把内容放在最前面。"
+                    + "极简·纪以莫兰迪色系、胶囊底栏与去边框设计将内容放在最前面。"
                     + "切换后配色、圆角、排版、弹窗位置与导航形态都会一起改变，"
                     + "阅读纸张配色不受影响。";
 
@@ -1577,21 +1817,20 @@ final class DesignSpec {
         g.thumbHeightDp = 158f;
     }
 
-    /** iOS 26：groupedBackground + Bold Large Title，文案简洁 */
-    private static void fillPaperGalleryLiquid(PaperGallery g, boolean d) {
-        fillGalleryLiquid(g, d);
-        g.eyebrow = "外观";
-        g.title = "让文字，落在喜欢的纸上";
-        g.subtitle = "四种纸张，各有各的光线";
-        g.inUsePrefix = "正在使用 · ";
-        g.allTitle = "纸张";
-        g.allHint = "轻点以预览，确认后应用";
+    private static void fillPaperGalleryMonolith(PaperGallery g, boolean d) {
+        fillGalleryMonolith(g, d);
+        g.eyebrow = "阅读纸张";
+        g.title = "选择阅读背景";
+        g.subtitle = "四种极简纯色纸张";
+        g.inUsePrefix = "当前使用 · ";
+        g.allTitle = "选择纸张";
+        g.allHint = "轻点卡片预览，确认后应用";
         g.cancel = "取消";
-        g.apply = "使用所选纸张";
-        g.aboutTitle = "关于阅读纸张";
+        g.apply = "应用纸张";
+        g.aboutTitle = "阅读纸张";
         g.aboutBody = PAPER_ABOUT;
-        g.footerA = "纸张 · 文字 · 光线";
-        g.footerB = "阅读纸张";
+        g.footerA = "配色 · 对比度 · 阅读舒适度";
+        g.footerB = "极简·纪";
         g.paperNames = PAPER_NAMES;
         g.paperHints = PAPER_HINTS;
         g.infoLabels = INFO_LABELS_IOS;
@@ -1622,17 +1861,19 @@ final class DesignSpec {
         switch (lang) {
             case MATERIAL:
                 return new TypeScale(
-                        new float[]{57, 45, 36, 32, 28, 24, 22, 16, 14, 16, 14, 12, 14, 12, 11},
+                        // 0.9.204：HEADLINE_L/M 32/28 → 28/26。原值在书架与设置页
+                        // 压出「巨黑大标题」，与墨读 26sp 的克制差一档；字重/字距不动。
+                        new float[]{57, 45, 36, 28, 26, 24, 22, 16, 14, 16, 14, 12, 14, 12, 11},
                         new int[]{0, 0, 0, 2, 0, 0, 0, 2, 2, 0, 0, 0, 2, 2, 2},
                         new float[]{-0.004f, 0, 0, 0, 0, 0, 0, 0.009f, 0.007f,
                                 0.031f, 0.018f, 0.033f, 0.007f, 0.042f, 0.045f});
-            case LIQUID:
+            case MONOLITH:
                 return new TypeScale(
-                        new float[]{34, 28, 22, 34, 28, 17, 20, 17, 13, 17, 13, 12, 17, 10, 11},
-                        new int[]{1, 1, 1, 1, 1, 1, 3, 1, 0, 0, 0, 0, 0, 0, 0},
-                        new float[]{-0.012f, -0.010f, -0.008f, -0.01f, -0.01f, -0.008f,
-                                -0.005f, -0.008f, 0.006f, -0.008f, 0.006f, 0,
-                                -0.008f, 0, 0});
+                    new float[]{34, 28, 22, 28, 24, 20, 22, 18, 15, 16, 14, 12, 15, 13, 11},
+                    new int[]{1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0},
+                    new float[]{-0.01f, -0.01f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+                );
+
             case MODOU:
             default:
                 return new TypeScale(
@@ -1779,7 +2020,7 @@ final class DesignSpec {
             // 而 surfaceHigh/surfaceLow 维持定稿，保证前几轮验收过的 M3 观感不回退。
             onPrimaryContainer = ModouTonal.tint(onPrim, prim, 0f);
             destructive = danger;
-        } else if (lang == Lang.LIQUID) {
+        } else if (lang == Lang.MONOLITH) {
             // B3：iOS 26 system colors + label 四级 + systemFill 四档 + separator（非不透明）
             sysBlue = dark ? 0xFF0A84FF : 0xFF007AFF;
             sysGreen = dark ? 0xFF30D158 : 0xFF34C759;
@@ -1811,10 +2052,10 @@ final class DesignSpec {
 
     /** 三段切换用的展示文案 */
     static String[] langIds() {
-        return new String[]{Lang.MODOU.id, Lang.MATERIAL.id, Lang.LIQUID.id};
+        return new String[]{Lang.MODOU.id, Lang.MATERIAL.id, Lang.MONOLITH.id};
     }
 
     static String[] langLabels() {
-        return new String[]{Lang.MODOU.label, Lang.MATERIAL.label, Lang.LIQUID.label};
+        return new String[]{Lang.MODOU.label, Lang.MATERIAL.label, Lang.MONOLITH.label};
     }
 }

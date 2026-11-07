@@ -46,6 +46,9 @@ final class ScrollChrome {
     /* 0.9.166 书架真·Large Title：内容区大标题块 + 收起态构图开关 */
     private View shelfTitleBlock;
     private boolean shelfFade, shelfInline, shelfHairline;
+    /* 0.9.172：行程可覆盖。画廊页的大标题区高度（眉标 + 大标题 + 副标题）与
+     * scrollEdgeDp 并不相等，固定用规格值会出现「标题还没淡完就被顶栏切掉」。 */
+    private int rangePx;
 
     private ScrollChrome(Context c, DesignSpec.Gallery g) {
         this.c = c;
@@ -106,6 +109,12 @@ final class ScrollChrome {
         shelfFade = fade;
         shelfInline = inline;
         shelfHairline = hairline;
+        return this;
+    }
+
+    /** 覆盖收起行程（px）：画廊页按自己的标题区高度给，避免淡出与裁剪错位。 */
+    ScrollChrome range(int px) {
+        rangePx = px;
         return this;
     }
 
@@ -179,7 +188,7 @@ final class ScrollChrome {
 
     /** 唯一的进度驱动：syPx 为已滚动距离，t 由规格里的 scrollEdgeDp 归一化。 */
     private void apply(int syPx) {
-        final int range = Math.max(1, ModouUi.dp(c, g.scrollEdgeDp));
+        final int range = rangePx > 0 ? rangePx : Math.max(1, ModouUi.dp(c, g.scrollEdgeDp));
         float t = Math.min(1f, Math.max(0f, syPx / (float) range));
         if (g.largeTitleScroll) {
             for (View e : expand) e.setAlpha(1f - t);

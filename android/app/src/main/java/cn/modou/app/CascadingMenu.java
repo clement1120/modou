@@ -372,14 +372,25 @@ final class CascadingMenu {
     private void animIn(View box, float pivotX, boolean above) {
         if (box == null) return;
         box.animate().cancel();
+        // 0.9.181：三套语言的「弹出」动作分开 —— 之前共用 0.90→1，换语言只换材质和颜色，
+        // 菜单看起来还是同一套东西。
+        //   M3 Expressive：从锚点 84% 放大（Material menu 的 container transform 手感）
+        //   iOS popover   ：94% 轻缩放 + 上浮 6dp（从按钮「浮出来」而不是「胀出来」）
+        //   墨读           ：完全不缩放，只上浮 10dp + 淡入（纸片被抽出来）
+        float fromScale = spec.material == DesignSpec.Material.TONAL ? 0.84f
+                : spec.material == DesignSpec.Material.LIQUID ? 0.94f : 1f;
+        float fromY = spec.material == DesignSpec.Material.TONAL ? 0f
+                : ModouUi.dp(host, spec.material == DesignSpec.Material.LIQUID ? 6 : 10);
         box.setAlpha(0f);
-        box.setScaleX(0.90f);
-        box.setScaleY(0.90f);
+        box.setScaleX(fromScale);
+        box.setScaleY(fromScale);
+        box.setTranslationY(fromY);
         box.setPivotX(Math.max(0f, Math.min(box.getWidth() > 0 ? box.getWidth() : mainW, pivotX)));
         box.setPivotY(above ? (box.getHeight() > 0 ? box.getHeight() : mainH) : 0f);
-        box.animate().alpha(1f).scaleX(1f).scaleY(1f)
+        box.animate().alpha(1f).scaleX(1f).scaleY(1f).translationY(0f)
                 .setDuration(animInMs())
-                .setInterpolator(menuInterp(1.8f, spec.overshoot > 0f))
+                .setInterpolator(menuInterp(spec.material == DesignSpec.Material.GLASS ? 1.4f : 1.8f,
+                        spec.overshoot > 0f))
                 .start();
     }
 
@@ -432,7 +443,12 @@ final class CascadingMenu {
             sub.animate().alpha(0f).setDuration(animOutMs()).start();
         }
         box.animate().cancel();
-        box.animate().alpha(0f).scaleX(0.94f).scaleY(0.94f)
+        // 出场与入场同源：M3 缩回锚点、iOS 轻缩 + 下沉、墨读只下沉不缩放
+        float toScale = spec.material == DesignSpec.Material.TONAL ? 0.90f
+                : spec.material == DesignSpec.Material.LIQUID ? 0.96f : 1f;
+        float toY = spec.material == DesignSpec.Material.TONAL ? 0f
+                : ModouUi.dp(host, spec.material == DesignSpec.Material.LIQUID ? 4 : 8);
+        box.animate().alpha(0f).scaleX(toScale).scaleY(toScale).translationY(toY)
                 .setDuration(animOutMs())
                 .setInterpolator(menuInterp(1.6f, false))
                 .withEndAction(remove)

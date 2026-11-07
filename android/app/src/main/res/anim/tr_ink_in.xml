@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 墨读 · 纸页上浮：极短位移 + 渐显，不左右滑动（与 M3/iOS 的运动语言区分开） -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:interpolator/decelerate_cubic"
+    android:shareInterpolator="true">
+    <alpha
+        android:duration="280"
+        android:fromAlpha="0"
+        android:toAlpha="1" />
+    <translate
+        android:duration="280"
+        android:fromYDelta="2.5%p"
+        android:toYDelta="0" />
+    <scale
+        android:duration="280"
+        android:fromXScale="0.992"
+        android:fromYScale="0.992"
+        android:pivotX="50%"
+        android:pivotY="50%"
+        android:toXScale="1"
+        android:toYScale="1" />
+</set>

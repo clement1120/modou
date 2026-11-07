@@ -86,9 +86,9 @@ final class ThemeMiniPreview extends Drawable {
             fill.setColor(sp.bg);
             c.drawRect(0, 0, w, h, fill);
             if (sp.material == DesignSpec.Material.TONAL) {
-                // M3 的层级不是渐变，是 elevation 带来的 primary tint
-                fill.setColor(alpha(sp.accent, 0x0A));
-                c.drawRect(0, 0, w, h * 0.34f, fill);
+                // M3 的层级不是渐变，是 elevation 带来的 primary tint（预览里加重一点更明显）
+                fill.setColor(alpha(sp.accent, 0x16));
+                c.drawRect(0, 0, w, h * 0.40f, fill);
             }
         }
     }
@@ -112,17 +112,37 @@ final class ThemeMiniPreview extends Drawable {
         line.setStrokeWidth(Math.max(1f, w * 0.011f));
         line.setStrokeCap(Paint.Cap.ROUND);
         line.setColor(alpha(sp.text, 0x75));
-        // 返回箭头
+        // 返回箭头（三套共有）
         c.drawLine(w * 0.10f, cy, w * 0.065f, cy - s, line);
         c.drawLine(w * 0.065f, cy - s, w * 0.065f, cy + s, line);
-        // 标题条
-        bar.setColor(alpha(sp.text, 0x8A));
-        float tw = w * 0.26f, th = h * 0.018f;
-        c.drawRoundRect((w - tw) / 2f, cy - th / 2f, (w + tw) / 2f, cy + th / 2f,
-                th / 2f, th / 2f, bar);
-        // 右侧 +
-        c.drawLine(w * 0.90f - s, cy, w * 0.90f + s, cy, line);
-        c.drawLine(w * 0.90f, cy - s, w * 0.90f, cy + s, line);
+
+        if (sp.material == DesignSpec.Material.TONAL) {
+            // M3：左对齐标题（紧贴返回钮右侧）+ 右上角实心头像圆，一眼区分于居中排版
+            bar.setColor(alpha(sp.text, 0x8A));
+            float tw = w * 0.30f, th = h * 0.016f;
+            c.drawRoundRect(w * 0.155f, cy - th / 2f, w * 0.155f + tw, cy + th / 2f,
+                    th / 2f, th / 2f, bar);
+            fill.setStyle(Paint.Style.FILL);
+            fill.setColor(sp.accent);
+            c.drawCircle(w * 0.90f, cy, s * 1.15f, fill);
+        } else if (sp.material == DesignSpec.Material.LIQUID) {
+            // iOS：居中 Large Title（更宽更高，象征加粗大标题）+ 右上角空心搜索圆
+            bar.setColor(alpha(sp.text, 0x8A));
+            float tw = w * 0.34f, th = h * 0.022f;
+            c.drawRoundRect((w - tw) / 2f, cy - th / 2f, (w + tw) / 2f, cy + th / 2f,
+                    th / 2f, th / 2f, bar);
+            line.setColor(alpha(sp.text, 0x75));
+            c.drawCircle(w * 0.90f, cy, s * 1.1f, line);
+        } else {
+            // 墨读：居中标题 + 右上角 ＋
+            bar.setColor(alpha(sp.text, 0x8A));
+            float tw = w * 0.26f, th = h * 0.018f;
+            c.drawRoundRect((w - tw) / 2f, cy - th / 2f, (w + tw) / 2f, cy + th / 2f,
+                    th / 2f, th / 2f, bar);
+            line.setColor(alpha(sp.text, 0x75));
+            c.drawLine(w * 0.90f - s, cy, w * 0.90f + s, cy, line);
+            c.drawLine(w * 0.90f, cy - s, w * 0.90f, cy + s, line);
+        }
     }
 
     /* ---------------- 内容区 ---------------- */
@@ -159,6 +179,9 @@ final class ThemeMiniPreview extends Drawable {
                     card.right - w * 0.055f, dy, line);
             c.drawLine(card.right - w * 0.055f, dy,
                     card.right - w * 0.075f, dy + w * 0.016f, line);
+            // 多画一行 hairline，强化「分组列表」观感
+            float rowY2 = card.top + card.height() * 0.76f;
+            c.drawLine(card.left + w * 0.075f, rowY2, card.right - w * 0.04f, rowY2, line);
         } else {
             // M3：card 内叠一层极淡 primary tint，体现 surfaceContainerLow → Low 的 tonal 层级
             fill.setStyle(Paint.Style.FILL);
@@ -185,27 +208,46 @@ final class ThemeMiniPreview extends Drawable {
                 btn.right - btn.width() * 0.22f, btn.centerY() + h * 0.006f,
                 h * 0.006f, h * 0.006f, bar);
 
-        // 次卡 / 第二组：三套形状依旧不同
-        RectF card2 = new RectF(left, h * 0.665f, right, h * 0.795f);
-        shape(c, card2, cardR * 0.85f, cardColor);
-        if (sp.material == DesignSpec.Material.GLASS) {
-            outline(c, card2, cardR * 0.85f, alpha(sp.glassRim, 0x66), Math.max(1f, w * 0.005f));
-        } else if (sp.material == DesignSpec.Material.LIQUID) {
+        // 次卡 / 第二组：三套形状依旧不同，且 iOS 直接画成分组列表、与另两套的「卡片」拉开
+        if (sp.material == DesignSpec.Material.LIQUID) {
+            // iOS：Inset Grouped 列表 —— 不画填充卡，直接画 2 行 hairline 分组行
             line.setStyle(Paint.Style.STROKE);
             line.setStrokeWidth(Math.max(1f, w * 0.004f));
             line.setColor(sp.line);
-            float rowY = card2.top + card2.height() * 0.52f;
-            c.drawLine(card2.left + w * 0.075f, rowY, card2.right - w * 0.04f, rowY, line);
-        }
-        bar.setColor(alpha(sp.text, 0x30));
-        c.drawRoundRect(card2.left + w * 0.075f, card2.top + card2.height() * 0.26f,
-                card2.left + w * 0.60f, card2.top + card2.height() * 0.26f + h * 0.010f,
-                h * 0.005f, h * 0.005f, bar);
-        if (sp.material == DesignSpec.Material.TONAL) {
-            // M3 再给一枚 tonal chip，明快、块面清晰
-            RectF chip = new RectF(card2.right - w * 0.30f, card2.top + card2.height() * 0.60f,
-                    card2.right - w * 0.06f, card2.bottom - card2.height() * 0.16f);
-            shape(c, chip, chip.height() / 2f, sp.container);
+            float top2 = h * 0.665f, bot2 = h * 0.795f;
+            float rh = (bot2 - top2) / 2f;
+            for (int r = 0; r < 2; r++) {
+                float ry = top2 + rh * r;
+                // 行首小圆头像（SF 风格彩色圆）
+                fill.setStyle(Paint.Style.FILL);
+                fill.setColor(alpha(sp.accent, 0xCC));
+                c.drawCircle(left + w * 0.045f, ry + rh * 0.5f, w * 0.022f, fill);
+                // 标题条
+                bar.setColor(alpha(sp.text, 0x55));
+                c.drawRoundRect(left + w * 0.105f, ry + rh * 0.34f,
+                        left + w * 0.52f, ry + rh * 0.34f + h * 0.010f, h * 0.005f, h * 0.005f, bar);
+                // 行尾 disclosure ›
+                float dy = ry + rh * 0.5f;
+                c.drawLine(right - w * 0.075f, dy - w * 0.013f, right - w * 0.057f, dy, line);
+                c.drawLine(right - w * 0.057f, dy, right - w * 0.075f, dy + w * 0.013f, line);
+                if (r == 0) c.drawLine(left + w * 0.105f, ry + rh, right - w * 0.04f, ry + rh, line);
+            }
+        } else {
+            RectF card2 = new RectF(left, h * 0.665f, right, h * 0.795f);
+            shape(c, card2, cardR * 0.85f, cardColor);
+            if (sp.material == DesignSpec.Material.GLASS) {
+                outline(c, card2, cardR * 0.85f, alpha(sp.glassRim, 0x66), Math.max(1f, w * 0.005f));
+            }
+            bar.setColor(alpha(sp.text, 0x30));
+            c.drawRoundRect(card2.left + w * 0.075f, card2.top + card2.height() * 0.26f,
+                    card2.left + w * 0.60f, card2.top + card2.height() * 0.26f + h * 0.010f,
+                    h * 0.005f, h * 0.005f, bar);
+            if (sp.material == DesignSpec.Material.TONAL) {
+                // M3 再给一枚 tonal chip，明快、块面清晰
+                RectF chip = new RectF(card2.right - w * 0.30f, card2.top + card2.height() * 0.60f,
+                        card2.right - w * 0.06f, card2.bottom - card2.height() * 0.16f);
+                shape(c, chip, chip.height() / 2f, sp.container);
+            }
         }
     }
 
@@ -220,6 +262,12 @@ final class ThemeMiniPreview extends Drawable {
         if (floating) {
             // 墨读：离底、左右留边的全圆玻璃浮岛 + 顶部凝光
             RectF island = new RectF(w * 0.10f, top, w * 0.90f, h * 0.965f);
+            // 先垫一层柔和投影，强调「悬浮」而非贴底（与 M3 / iOS 的贴底栏拉开差距）
+            fill.setStyle(Paint.Style.FILL);
+            fill.setColor(alpha(0xFF000000, sp.dark ? 0x38 : 0x1C));
+            pill(c, new RectF(island.left + w * 0.03f, island.top + h * 0.014f,
+                    island.right - w * 0.03f, island.bottom + h * 0.014f),
+                    alpha(0xFF000000, sp.dark ? 0x38 : 0x1C));
             pill(c, island, alpha(sp.glassBase, sp.dark ? 0xD0 : 0xE0));
             outline(c, island, island.height() / 2f,
                     alpha(sp.glassRim, 0x99), Math.max(1f, w * 0.006f));

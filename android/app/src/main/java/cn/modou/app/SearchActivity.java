@@ -118,14 +118,21 @@ public class SearchActivity extends Activity {
     }
 
     static void launch(Activity from) {
-        from.startActivity(new Intent(from, SearchActivity.class));
+        ModouTransition.push(from, new Intent(from, SearchActivity.class));
     }
 
     /** 按作者搜书：详情页点作者名进来，关键词直接填好并开搜 */
     static void launchByAuthor(Activity from, String author) {
         Intent i = new Intent(from, SearchActivity.class);
         i.putExtra("kw", author);
-        from.startActivity(i);
+        ModouTransition.push(from, i);
+    }
+
+    /** 统一返回转场：三套语言各自的 pop 动作（见 {@link ModouTransition}） */
+    @Override
+    public void finish() {
+        super.finish();
+        ModouTransition.back(this);
     }
 
     @Override
@@ -886,7 +893,7 @@ public class SearchActivity extends Activity {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        TextView t = ModouUi.tv(this, f.name + "：" + f.reason, 12.5f, f.invalid ? ui.sub : 0xFFE06A6A);
+        TextView t = ModouUi.tv(this, f.name + "：" + f.reason, 12.5f, f.invalid ? ui.sub : ui.danger);
         t.setPadding(0, ModouUi.dp(this, 6), 0, ModouUi.dp(this, 6));
         row.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         if (!f.invalid && !f.sourceUrl.isEmpty()) {
@@ -1118,7 +1125,10 @@ public class SearchActivity extends Activity {
         row.setPadding(ModouUi.dp(this, 4), ModouUi.dp(this, 12),
                 ModouUi.dp(this, 4), ModouUi.dp(this, 12));
 
-        TextView t = ModouUi.tv(this, label, 14, on ? ui.text : ui.text);
+        // 0.9.201：原来三元两分支都是 ui.text，选中态只有「✓」有反馈，字色字重没变化。
+        TextView t = ModouUi.tv(this, label, 14, on ? ui.accent : ui.text);
+        t.setTypeface(on ? android.graphics.Typeface.DEFAULT_BOLD
+                : android.graphics.Typeface.DEFAULT);
         t.setSingleLine(true);
         t.setEllipsize(TextUtils.TruncateAt.END);
         row.addView(t, new LinearLayout.LayoutParams(0,
@@ -1482,11 +1492,14 @@ public class SearchActivity extends Activity {
         slp.setMargins(ModouUi.dp(this, 3), 0, ModouUi.dp(this, 3), ModouUi.dp(this, 3));
         coverBox.addView(h.src, slp);
 
-        TextView block = ModouUi.tv(this, "✕", 9, 0xFFFFFFFF);
-        block.setGravity(Gravity.CENTER);
+        ImageView block = new ImageView(this);
+        block.setScaleType(ImageView.ScaleType.CENTER);
+        block.setImageDrawable(new ModouGlyph(ModouGlyph.CLOSE, 0xFFFFFFFF,
+                ModouUi.dp(this, 10), ModouUi.dp(this, 1.5f)));
+        block.setContentDescription("屏蔽这本书");
         block.setBackground(ModouUi.round(0x99000000, 999));
         FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
-                ModouUi.dp(this, 17), ModouUi.dp(this, 17));
+                ModouUi.dp(this, 24), ModouUi.dp(this, 24));
         blp.gravity = Gravity.TOP | Gravity.END;
         blp.setMargins(0, ModouUi.dp(this, 3), ModouUi.dp(this, 3), 0);
         block.setOnClickListener(v -> {
@@ -1498,18 +1511,23 @@ public class SearchActivity extends Activity {
             syncStatus();
             ModouUi.toast(this, "已屏蔽《" + g.name + "》");
         });
+        ModouUi.expandTouch(block, 48);
+        ModouMotion.press(block);
         coverBox.addView(block, blp);
         row.addView(coverBox, clp);
 
         /* 中间：书名 / 作者 + 最新章 / 标签 */
         LinearLayout mid = new LinearLayout(this);
         mid.setOrientation(LinearLayout.VERTICAL);
-        h.name = ModouUi.tv(this, "", 16, ui.text);
-        h.name.setTypeface(h.name.getTypeface(), android.graphics.Typeface.BOLD);
+        h.name = ModouUi.tv(this, "", ui.spec.material == DesignSpec.Material.LIQUID ? 17 : 16, ui.text);
+        h.name.setTypeface(ui.spec.material == DesignSpec.Material.GLASS
+                ? h.name.getTypeface() : android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL),
+                ui.spec.material == DesignSpec.Material.GLASS ? android.graphics.Typeface.BOLD
+                        : android.graphics.Typeface.NORMAL);
         h.name.setSingleLine(true);
         h.name.setEllipsize(TextUtils.TruncateAt.END);
         mid.addView(h.name);
-        h.meta = ModouUi.tv(this, "", 11.5f, ui.sub);
+        h.meta = ModouUi.tv(this, "", ui.spec.material == DesignSpec.Material.GLASS ? 11.5f : 13f, ui.sub);
         h.meta.setSingleLine(true);
         h.meta.setEllipsize(TextUtils.TruncateAt.END);
         h.meta.setPadding(0, ModouUi.dp(this, 4), 0, 0);
@@ -1528,29 +1546,29 @@ public class SearchActivity extends Activity {
         row.addView(mid, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         /* 右侧：更多操作 */
-        TextView more = ModouUi.tv(this, "⋯", 17, ui.sub);
-        more.setGravity(Gravity.CENTER);
+        ImageView more = new ImageView(this);
+        more.setImageDrawable(new ModouGlyph(ModouGlyph.MORE_H, ui.sub,
+                ModouUi.dp(this, 20), ModouUi.dp(this, 1.7f)));
+        more.setScaleType(ImageView.ScaleType.CENTER);
+        more.setContentDescription("搜索结果操作");
         more.setLayoutParams(new LinearLayout.LayoutParams(
-                ModouUi.dp(this, 36), ModouUi.dp(this, 36)));
+                ModouUi.dp(this, 40), ModouUi.dp(this, 40)));
+        more.setBackground(ModouUi.pressOverlay(this, 20));
         more.setOnClickListener(v -> {
             if (h.g != null) showItemMenu(h.g);
         });
+        ModouUi.expandTouch(more, 48);
+        ModouMotion.press(more);
         row.addView(more);
 
         // 0.9.169：结果行背景交给语言。墨读 / iOS 是透明行 + 涟漪（原样）；
         // M3 是常驻 filled card（surface 分层）+ 叠在上面的涟漪。
         if (ui.spec.searchHitCardFilled) {
-            android.graphics.drawable.GradientDrawable cardBg =
-                    new android.graphics.drawable.GradientDrawable();
-            cardBg.setColor(ui.card);
-            cardBg.setCornerRadius(ModouUi.dp(this, ui.spec.searchHitCardCornerDp));
-            android.graphics.drawable.GradientDrawable mask =
-                    new android.graphics.drawable.GradientDrawable();
-            mask.setColor(0xFFFFFFFF);
-            mask.setCornerRadius(ModouUi.dp(this, ui.spec.searchHitCardCornerDp));
-            row.setBackground(new android.graphics.drawable.RippleDrawable(
-                    android.content.res.ColorStateList.valueOf(ModouUi.alpha(ui.text, 0x14)),
-                    cardBg, mask));
+            row.setBackground(ModouUi.squircle(this, ui.spec.surfaceContainerLow,
+                    ui.spec.searchHitCardCornerDp));
+            row.setForeground(ModouUi.pressOverlay(this, ui.spec.searchHitCardCornerDp));
+        } else if (ui.spec.material == DesignSpec.Material.LIQUID) {
+            row.setBackground(ModouUi.pressOverlay(this, 12));
         } else {
             row.setBackground(new android.graphics.drawable.RippleDrawable(
                     android.content.res.ColorStateList.valueOf(
@@ -1568,7 +1586,8 @@ public class SearchActivity extends Activity {
     private void bindRow(RowHolder h, Group g) {
         h.g = g;
         Hit h0 = g.hits.get(0);
-        CoverLoader.load(h.cover, h0.book == null ? "" : h0.book.optString("coverUrl", ""), g.name);
+        CoverLoader.load(h.cover, h0.book == null ? "" : h0.book.optString("coverUrl", ""), g.name,
+                h0.book == null ? "" : h0.book.optString("author", ""), 0f);
         h.src.setText(h0.sourceName.isEmpty() ? "书源" : h0.sourceName);
         h.name.setText(g.name);
 

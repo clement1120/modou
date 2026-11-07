@@ -54,7 +54,7 @@ public class BookActivity extends Activity implements SourceSwap.Host {
     static void launch(Activity from, String bookId) {
         Intent i = new Intent(from, BookActivity.class);
         i.putExtra("id", bookId);
-        from.startActivity(i);
+        ModouTransition.push(from, i);
     }
 
     private ModouUi ui;
@@ -92,10 +92,19 @@ public class BookActivity extends Activity implements SourceSwap.Host {
     private int cacheDone;
     private int cacheFail;
 
+    /** 统一返回转场：三套语言各自的 pop 动作（见 {@link ModouTransition}） */
+    @Override
+    public void finish() {
+        super.finish();
+        ModouTransition.back(this);
+    }
+
     @Override
     protected void onCreate(Bundle b) {
         ModouUi.applyTheme(this);
         super.onCreate(b);
+        // 0.9.185：沉浸式（内容自己用 statusBarPad() 让位，这里不再重复留白）
+        ModouUi.edgeToEdge(this);
         ui = ModouUi.of(this);
         store = ModouStore.get(this);
         try {
@@ -462,7 +471,8 @@ public class BookActivity extends Activity implements SourceSwap.Host {
         iv.setBackground(ModouUi.squircle(this, bookCoverPlaceColor(), bs.bookCoverCornerDp));
         iv.setClipToOutline(true);
         iv.setElevation(ModouUi.dp(this, bs.bookCoverElevDp));
-        CoverLoader.load(iv, book.optString("coverUrl", ""), book.optString("name", ""));
+        CoverLoader.load(iv, book.optString("coverUrl", ""), book.optString("name", ""),
+                book.optString("author", ""), 0f);
         // 封面包一层 FrameLayout：左下角放「换封面」小标，整块可点 → 按书名在线搜封面
         FrameLayout coverWrap = new FrameLayout(this);
         coverWrap.setLayoutParams(new LinearLayout.LayoutParams(w, Math.round(w * 1.38f)));
@@ -482,6 +492,9 @@ public class BookActivity extends Activity implements SourceSwap.Host {
         swp.gravity = Gravity.BOTTOM | Gravity.START;
         coverWrap.addView(swap, swp);
         coverWrap.setOnClickListener(v -> pickCover(iv));
+        coverWrap.setContentDescription("更换《" + book.optString("name", "") + "》的封面");
+        coverWrap.setFocusable(true);
+        ModouMotion.press(coverWrap, 0.98f);
         row.addView(coverWrap);
 
         LinearLayout meta = new LinearLayout(this);
@@ -499,7 +512,10 @@ public class BookActivity extends Activity implements SourceSwap.Host {
         String author = book.optString("author", "").trim();
         if (!author.isEmpty()) {
             TextView au = ModouUi.tv(this, author + " ›", 13.5f, ui.accent);
-            au.setPadding(0, ModouUi.dp(this, 8), 0, 0);
+            au.setPadding(0, ModouUi.dp(this, 8), 0, ModouUi.dp(this, 8));
+            au.setMinHeight(ModouUi.dp(this, 44));
+            au.setGravity(Gravity.CENTER_VERTICAL);
+            au.setContentDescription("搜索作者 " + author + " 的其他作品");
             au.setOnClickListener(v -> SearchActivity.launchByAuthor(this, author));
             meta.addView(au);
         }
@@ -644,7 +660,11 @@ public class BookActivity extends Activity implements SourceSwap.Host {
                 onShelf ? null : this::addToShelf);
         View a2 = action(R.drawable.ic_rd_toc, "查看目录", this::scrollToToc);
         View swap = action(R.drawable.ic_book_swap, "换源", isLocal() ? null : this::changeSource);
-        if (isLocal()) swap.setAlpha(0.35f); // 本地书没有别的源，别给出一个点了没反应的按钮
+        if (isLocal()) {
+            swap.setAlpha(0.38f);
+            swap.setEnabled(false);
+            swap.setContentDescription("换源，本地书籍不可用");
+        }
         View a4 = action(R.drawable.ic_book_history, "阅读记录", this::showReadingRecord);
 
         row.addView(a1, actLp());
@@ -673,22 +693,35 @@ public class BookActivity extends Activity implements SourceSwap.Host {
         LinearLayout b = new LinearLayout(this);
         b.setOrientation(LinearLayout.VERTICAL);
         b.setGravity(Gravity.CENTER);
-        b.setPadding(0, ModouUi.dp(this, 11), 0, ModouUi.dp(this, 10));
+        b.setPadding(0, ModouUi.dp(this, 12), 0, ModouUi.dp(this, 11));
+        b.setMinimumHeight(ModouUi.dp(this, 72));
+        b.setContentDescription(label);
         android.graphics.drawable.Drawable blockBg = bookActionBlockBg();
         if (blockBg != null) b.setBackground(blockBg);
 
         ImageView iv = new ImageView(this);
         int s = ModouUi.dp(this, 22);
         iv.setLayoutParams(new LinearLayout.LayoutParams(s, s));
-        iv.setImageDrawable(tinted(iconRes, r == null ? ModouUi.alpha(ui.sub, 0x88) : ui.text));
+        int actionColor = ui.spec.material == DesignSpec.Material.LIQUID ? ui.spec.sysBlue
+                : ui.spec.material == DesignSpec.Material.TONAL ? ui.accent : ui.text;
+        iv.setImageDrawable(tinted(iconRes, r == null ? ModouUi.alpha(ui.sub, 0x88) : actionColor));
         b.addView(iv);
 
-        TextView t = ModouUi.tv(this, label, 11, r == null ? ui.sub : ui.text);
+        TextView t = ModouUi.tv(this, label, ui.spec.material == DesignSpec.Material.TONAL ? 12 : 11,
+                r == null ? ui.sub : ui.spec.material == DesignSpec.Material.LIQUID ? ui.spec.sysBlue : ui.text);
         t.setGravity(Gravity.CENTER);
         t.setPadding(0, ModouUi.dp(this, 5), 0, 0);
         b.addView(t);
 
-        if (r != null) b.setOnClickListener(v -> r.run());
+        if (r != null) {
+            b.setOnClickListener(v -> r.run());
+            b.setFocusable(true);
+            b.setForeground(ModouUi.pressOverlay(this,
+                    ui.spec.bookActionStyle == 1 ? 0 : ui.spec.bookActionCornerDp));
+            ModouMotion.press(b, 0.97f);
+        } else {
+            b.setFocusable(false);
+        }
         return b;
     }
 
@@ -956,6 +989,9 @@ public class BookActivity extends Activity implements SourceSwap.Host {
 
         b.setOnClickListener(v -> ReaderLaunch.open(this, ModouBridge.shared(), book,
                 curIndex >= 0 ? curIndex : 0));
+        b.setContentDescription(curIndex >= 0 ? "继续阅读" : "开始阅读");
+        b.setFocusable(true);
+        ModouMotion.press(b, 0.96f);
         return b;
     }
 
@@ -1416,17 +1452,10 @@ public class BookActivity extends Activity implements SourceSwap.Host {
         if (bodyView != null) paint(bodyView);
     }
 
-    /** 页面中央轻提示：换源定位这种「一次性告知」用底部 Toast 容易被忽略 */
+    /** 换源定位需要更醒目的居中反馈，但外观与动画仍由当前设计语言统一决定。 */
     @Override
     public void centerToast(String s) {
-        try {
-            android.widget.Toast t = android.widget.Toast.makeText(this, s,
-                    android.widget.Toast.LENGTH_SHORT);
-            t.setGravity(android.view.Gravity.CENTER, 0, 0);
-            t.show();
-        } catch (Throwable e) {
-            ModouUi.toast(this, s);
-        }
+        ModouUi.centerToast(this, s);
     }
 
     /** 编辑书名/作者/封面；封面支持按书名在线搜（对齐网页版 fetchCovers） */
@@ -1440,7 +1469,8 @@ public class BookActivity extends Activity implements SourceSwap.Host {
         int cw = ModouUi.dp(this, 84);
         iv.setLayoutParams(new LinearLayout.LayoutParams(cw, (int) (cw * 1.35f)));
         iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        CoverLoader.load(iv, book.optString("coverUrl", ""), book.optString("name", ""));
+        CoverLoader.load(iv, book.optString("coverUrl", ""), book.optString("name", ""),
+                book.optString("author", ""), 0f);
         box.addView(iv);
 
         EditText name = ModouUi.input(this, "书名", book.optString("name", ""), 1);
@@ -1479,16 +1509,24 @@ public class BookActivity extends Activity implements SourceSwap.Host {
         final Dialog d = ModouUi.sheetForm(this, "编辑信息", box, footer);
         // 同上：编辑信息是表单，点面板外不关（否则一敲键盘就把输入丢了）
         d.setCanceledOnTouchOutside(false);
-        footer.addView(ModouUi.sheetButtons(this, d, "取消", "保存", null, () -> {
+        footer.addView(ModouUi.sheetButtonsGuarded(this, d, "取消", "保存", null, () -> {
+            String newName = name.getText().toString().trim();
+            if (newName.isEmpty()) {
+                name.setError("书名不能为空");
+                name.requestFocus();
+                return false;
+            }
             try {
-                book.put("name", name.getText().toString().trim());
+                book.put("name", newName);
                 book.put("author", author.getText().toString().trim());
                 book.put("coverUrl", cover.getText().toString().trim());
                 putBook();
                 ModouUi.toast(this, "已保存");
                 paint(bodyView);
+                return true;
             } catch (Exception e) {
-                ModouUi.toast(this, "保存失败");
+                ModouUi.toast(this, "保存失败：" + e.getMessage());
+                return false;
             }
         }));
         } catch (Throwable t) {
@@ -1816,15 +1854,21 @@ public class BookActivity extends Activity implements SourceSwap.Host {
         LinearLayout footer = new LinearLayout(this);
         footer.setOrientation(LinearLayout.VERTICAL);
         final Dialog d = ModouUi.sheet(this, "搜索章节", box, footer);
-        footer.addView(ModouUi.sheetButtons(this, d, "取消", "定位", null, () -> {
+        footer.addView(ModouUi.sheetButtonsGuarded(this, d, "取消", "定位", null, () -> {
             String kw = q.getText().toString().trim();
-            if (kw.isEmpty()) return;
+            if (kw.isEmpty()) {
+                q.setError("请输入章节名关键词");
+                q.requestFocus();
+                return false;
+            }
             int found = findChapter(kw);
             if (found < 0) {
-                ModouUi.toast(this, "没有匹配的章节");
-                return;
+                q.setError("没有匹配的章节");
+                q.requestFocus();
+                return false;
             }
             jumpToChapter(found, true);
+            return true;
         }));
     }
 

@@ -11,6 +11,11 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.widget.SeekBar;
 
+import android.os.Bundle;
+import android.view.KeyEvent;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+
 import java.util.List;
 
 /**
@@ -45,15 +50,34 @@ public class ModouPillSeekBar extends View {
     private int ballFill = 0xFFFFFFFF;
     private int ballRing = 0x14000000;
 
+    /* 0.9.173：三套设计语言（Stage 5）
+       墨读 = 8dp 药丸轨 + 内发光 + 白球；iOS = 4dp 细轨 + 无发光圆点；
+       M3 = 4dp 细轨 + 滑块两侧留缝 + 两端 2dp 停靠点 + 竖向药丸滑块。 */
+    private int style;
+    private boolean glow = true;
+    private boolean stopDots;
+
     /** 书签刻度（页码），由外部持有同一份 List，改完 invalidate 即可 */
     private List<Integer> ticks;
 
     private SeekBar.OnSeekBarChangeListener listener;
 
+    /** 无障碍：朗读用的标签（如「亮度」），以及键盘/无障碍一次调节的步长 */
+    private String a11yLabel;
+    private int keyStep = 1;
+
     public ModouPillSeekBar(Context c) {
         super(c);
         setFocusable(true);
         setClickable(true);
+        // 规格一次读定：轨道高度 / 滑块半径 / 内发光 / 停靠点全由设计语言决定，
+        // 调用点不再传 8 / 8 这种写死值。
+        DesignSpec sp = DesignSpec.of(c);
+        style = sp.rdSeekStyle;
+        trackH = sp.rdSeekTrackDp;
+        ballR = sp.rdSeekThumbDp;
+        glow = sp.rdSeekGlow;
+        stopDots = sp.rdSeekStopDots;
     }
 
     /* ---------------- 配置 ---------------- */
@@ -89,6 +113,19 @@ public class ModouPillSeekBar extends View {
         listener = l;
     }
 
+    public void setAccessibilityLabel(String s) {
+        a11yLabel = s;
+    }
+
+    public void setKeyStep(int s) {
+        keyStep = Math.max(1, s);
+    }
+
+    private String valueText() {
+        String v = max == 100 ? (progress + "%") : (progress + " / " + max);
+        return (a11yLabel != null && !a11yLabel.isEmpty()) ? (a11yLabel + " " + v) : v;
+    }
+
     public int getMax() {
         return max;
     }
@@ -108,6 +145,7 @@ public class ModouPillSeekBar extends View {
         if (n == progress) return;
         progress = n;
         invalidate();
+        sendAccessibilityEvent(AccessibilityEvent.TYPE_VIEW_SELECTED);
     }
 
     /* ---------------- 尺寸 ---------------- */
@@ -149,33 +187,56 @@ public class ModouPillSeekBar extends View {
         float ratio = max <= 0 ? 0f : Math.min(1f, (float) progress / max);
         float tx = left + (right - left) * ratio;
 
-        // 轨道：两端全圆。左端会被白球盖住一半，看起来就是从球里延伸出来的一条胶囊
+        // M3：轨道在滑块两侧各留 6dp 缝（Expressive slider 的「断轨」）
+        float gap = style == 2 ? ball + px(6) : 0f;
+
         p.setStyle(Paint.Style.FILL);
         p.setColor(trackBg);
-        rf.set(left, cy - rh, right, cy + rh);
-        c.drawRoundRect(rf, rh, rh, p);
+        if (style == 2) {
+            if (tx - gap > left) {
+                rf.set(left, cy - rh, tx - gap, cy + rh);
+                c.drawRoundRect(rf, rh, rh, p);
+            }
+            if (tx + gap < right) {
+                rf.set(tx + gap, cy - rh, right, cy + rh);
+                c.drawRoundRect(rf, rh, rh, p);
+            }
+        } else {
+            rf.set(left, cy - rh, right, cy + rh);
+            c.drawRoundRect(rf, rh, rh, p);
+        }
 
-        // 已读段：终点严格等于滑块中心 tx，圆角与轨道同为 rh；
-        // 宽度不足一个高度时收成 宽/2，两端仍是半圆（否则会画成方块或椭圆）。
-        float w = tx - left;
+        // M3 停靠点：轨道两端各一枚 2dp 小圆，标记「最小 / 最大」
+        if (stopDots) {
+            p.setColor(tickRing);
+            float d = px(2f);
+            c.drawCircle(left, cy, d, p);
+            c.drawCircle(right, cy, d, p);
+        }
+
+        // 已读段：终点严格等于滑块中心（M3 要再退一个 gap），圆角与轨道同为 rh
+        float onEnd = style == 2 ? tx - gap : tx;
+        float w = onEnd - left;
         if (w > 0.01f) {
             float rr = Math.min(rh, w / 2f);
             p.setColor(isEnabled() ? trackOn : (trackOn & 0x00FFFFFF) | 0x66000000);
-            rf.set(left, cy - rh, tx, cy + rh);
+            rf.set(left, cy - rh, onEnd, cy + rh);
             c.drawRoundRect(rf, rr, rr, p);
 
-            // 极淡的内发光：只画在「球体以内、两端圆头以内」，不会在交界处露出直边
-            float gx0 = left + rh * 2f;
-            float gx1 = tx - rh * 2f;
-            if (gx1 > gx0 && isEnabled()) {
-                p.setStyle(Paint.Style.STROKE);
-                p.setStrokeCap(Paint.Cap.ROUND);
-                p.setStrokeWidth(rh * 0.44f);
-                p.setColor(glowColor);
-                float gy = cy - rh * 0.48f;
-                c.drawLine(gx0, gy, gx1, gy, p);
-                p.setStyle(Paint.Style.FILL);
-                p.setStrokeCap(Paint.Cap.BUTT);
+            // 内发光只有墨读有（它是「药丸」体积感的一部分）；iOS / M3 是平轨
+            if (glow) {
+                float gx0 = left + rh * 2f;
+                float gx1 = onEnd - rh * 2f;
+                if (gx1 > gx0 && isEnabled()) {
+                    p.setStyle(Paint.Style.STROKE);
+                    p.setStrokeCap(Paint.Cap.ROUND);
+                    p.setStrokeWidth(rh * 0.44f);
+                    p.setColor(glowColor);
+                    float gy = cy - rh * 0.48f;
+                    c.drawLine(gx0, gy, gx1, gy, p);
+                    p.setStyle(Paint.Style.FILL);
+                    p.setStrokeCap(Paint.Cap.BUTT);
+                }
             }
         }
 
@@ -192,14 +253,30 @@ public class ModouPillSeekBar extends View {
             }
         }
 
-        // 滑块：中心 = 进度终点。不透明球 + 一圈极淡白光，球边缘加 1dp 淡墨描边，
-        // 压在纸色面板上才看得出轮廓（纯白球在全白面板上会糊掉）。
         p.setStyle(Paint.Style.FILL);
-        p.setShader(new RadialGradient(tx, cy, ball * 1.9f,
-                new int[]{0x4DFFFFFF, 0x1FFFFFFF, 0x00FFFFFF},
-                new float[]{0f, 0.55f, 1f}, Shader.TileMode.CLAMP));
-        c.drawCircle(tx, cy, ball * 1.9f, p);
-        p.setShader(null);
+        if (style == 2) {
+            // M3 Expressive 的滑块是一根竖向短棒（4×2R），不是球
+            float hw = px(2f);
+            float hh = ball;
+            rf.set(tx - hw, cy - hh, tx + hw, cy + hh);
+            p.setColor(ballFill);
+            c.drawRoundRect(rf, hw, hw, p);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(Math.max(1f, px(0.8f)));
+            p.setColor(ballRing);
+            c.drawRoundRect(rf, hw, hw, p);
+            p.setStyle(Paint.Style.FILL);
+            return;
+        }
+
+        // 墨读：不透明球 + 一圈极淡白光；iOS：去掉白光，只留 1dp 描边（UISlider 的干净圆点）
+        if (glow) {
+            p.setShader(new RadialGradient(tx, cy, ball * 1.9f,
+                    new int[]{0x4DFFFFFF, 0x1FFFFFFF, 0x00FFFFFF},
+                    new float[]{0f, 0.55f, 1f}, Shader.TileMode.CLAMP));
+            c.drawCircle(tx, cy, ball * 1.9f, p);
+            p.setShader(null);
+        }
         p.setColor(ballFill);
         c.drawCircle(tx, cy, ball - px(1f), p);
         p.setStyle(Paint.Style.STROKE);
@@ -255,5 +332,70 @@ public class ModouPillSeekBar extends View {
     public boolean performClick() {
         super.performClick();
         return true;
+    }
+
+    @Override
+    public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
+        super.onInitializeAccessibilityNodeInfo(info);
+        info.setClassName(SeekBar.class.getName());
+        info.setRangeInfo(AccessibilityNodeInfo.RangeInfo.obtain(
+                AccessibilityNodeInfo.RangeInfo.RANGE_TYPE_INT, 0, max, progress));
+        String t = valueText();
+        info.setText(t);
+        info.setContentDescription(t);
+        info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS);
+        info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD);
+        info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD);
+    }
+
+    @Override
+    public void onPopulateAccessibilityEvent(AccessibilityEvent event) {
+        super.onPopulateAccessibilityEvent(event);
+        int type = event.getEventType();
+        if (type == AccessibilityEvent.TYPE_VIEW_SELECTED
+                || type == AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED) {
+            event.getText().add(valueText());
+        }
+    }
+
+    @Override
+    public boolean performAccessibilityAction(int action, Bundle args) {
+        if (action == AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.getId()) {
+            if (args != null && args.containsKey(
+                    AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE)) {
+                float val = args.getFloat(
+                        AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE);
+                setProgress(Math.round(val));
+                return true;
+            }
+            return false;
+        }
+        if (action == AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD.getId()) {
+            setProgress(progress + keyStep);
+            return true;
+        }
+        if (action == AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD.getId()) {
+            setProgress(progress - keyStep);
+            return true;
+        }
+        return super.performAccessibilityAction(action, args);
+    }
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (!isEnabled()) return super.onKeyDown(keyCode, event);
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+            case KeyEvent.KEYCODE_MINUS:
+                setProgress(progress - keyStep);
+                return true;
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+            case KeyEvent.KEYCODE_PLUS:
+            case KeyEvent.KEYCODE_EQUALS:
+                setProgress(progress + keyStep);
+                return true;
+            default:
+                return super.onKeyDown(keyCode, event);
+        }
     }
 }

@@ -910,7 +910,7 @@ final class SourcesPanel {
                底部升起的那条操作栏上，顶栏不再和它抢注意力。 */
             ImageView close = ModouUi.glyphBtn(host,
                     new ModouGlyph(ModouGlyph.CLOSE, iconColor,
-                            ModouUi.dp(host, 15), ModouUi.dp(host, 1.6f)), 40);
+                            ModouUi.dp(host, 15), ModouUi.dp(host, 1.6f)), 40, "退出多选");
             close.setOnClickListener((v) -> exitSelection());
             h.addView(close, ilp);
             TextView cnt = ModouUi.tv(host, "已选 " + sel.size() + " 项", 16, ui.text);
@@ -1132,7 +1132,8 @@ final class SourcesPanel {
         col.setPadding(0, ModouUi.dp(host, 4), 0, 0);
 
         if (searchExpand || !searchKey.isEmpty()) {
-            final EditText searchEd = ModouUi.input(host, "搜索书源名称 / 地址 / 分组", searchKey, 1);
+            final EditText searchEd = ModouUi.searchField(host, "搜索书源名称 / 地址 / 分组");
+            searchEd.setText(searchKey);
             searchEd.addTextChangedListener(new android.text.TextWatcher() {
                 public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
                 public void onTextChanged(CharSequence s, int a, int b, int c) {}
@@ -1173,25 +1174,14 @@ final class SourcesPanel {
         return col;
     }
 
-    /** 工具栏上的胶囊按钮（筛选 / 排序） */
-    private TextView chipBtn(String label, boolean primary) {
-        TextView c = ModouUi.tv(host, label, 12.5f, primary ? 0xFFFFFFFF : ui.sub);
-        c.setGravity(Gravity.CENTER);
-        c.setPadding(ModouUi.dp(host, 12), ModouUi.dp(host, 6), ModouUi.dp(host, 12), ModouUi.dp(host, 6));
-        GradientDrawable g = new GradientDrawable();
-        // 白卡底在浅灰页面上像一枚贴纸：改成 6% 墨色，只留一点「这里能点」的暗示
-        g.setColor(primary ? ModouUi.toneAccent(host) : ModouUi.alpha(ui.text, 0x0F));
-        g.setCornerRadius(ModouUi.dp(host, 999));
-        c.setBackground(g);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.rightMargin = ModouUi.dp(host, 6);
-        c.setLayoutParams(lp);
-        return c;
-    }
-
-    /** 已激活条件 chip：点一下清除该条件 */
+    /** 已激活条件 chip：点一下清除该条件。
+     *  0.9.173：iOS / M3 走统一 {@link ModouUi#chip}（胶囊 / 描边 chip 的选中态），
+     *  墨读保留原来的「白卡 + 11.5sp 次级灰」—— 那是它自己的层级表达（卡片浮在灰页上），
+     *  换成 6% 墨色会变成另一种语言，故按 chipStyle 分流而不是一把改掉。 */
     private TextView condChip(String label, Runnable clear) {
+        if (ui.spec.chipStyle != 0) {
+            return ModouUi.chip(host, "✕ " + label, true, v -> clear.run());
+        }
         TextView c = ModouUi.tv(host, "✕ " + label, 11.5f, ui.sub);
         c.setGravity(Gravity.CENTER);
         c.setPadding(ModouUi.dp(host, 9), ModouUi.dp(host, 5), ModouUi.dp(host, 9), ModouUi.dp(host, 5));
@@ -1536,7 +1526,7 @@ final class SourcesPanel {
         // 又不至于像第三颗功能按钮那样抢走书源名的视觉重心
         ImageView hd = ModouUi.glyphBtn(host,
                 new ModouGlyph(ModouGlyph.DRAG, ModouUi.alpha(ui.text, 0xB3),
-                        ModouUi.dp(host, 15), ModouUi.dp(host, 1.7f)), 34);
+                        ModouUi.dp(host, 15), ModouUi.dp(host, 1.7f)), 34, "拖动排序");
         android.graphics.drawable.GradientDrawable hbg = new android.graphics.drawable.GradientDrawable();
         hbg.setShape(android.graphics.drawable.GradientDrawable.OVAL);
         hbg.setColor(ModouUi.alpha(ui.text, 0x0F));
@@ -1548,12 +1538,12 @@ final class SourcesPanel {
         int iconColor = ModouUi.alpha(ui.text, 0xB3);
         ImageView pen = ModouUi.glyphBtn(host,
                 new ModouGlyph(ModouGlyph.EDIT, iconColor,
-                        ModouUi.dp(host, 13), ModouUi.dp(host, 1.4f)), 36);
+                        ModouUi.dp(host, 13), ModouUi.dp(host, 1.4f)), 36, "编辑");
         acts.addView(pen, new LinearLayout.LayoutParams(
                 ModouUi.dp(host, 36), ModouUi.dp(host, 36)));
         ImageView mv = ModouUi.glyphBtn(host,
                 new ModouGlyph(ModouGlyph.MORE_V, iconColor,
-                        ModouUi.dp(host, 14), ModouUi.dp(host, 1.5f)), 36);
+                        ModouUi.dp(host, 14), ModouUi.dp(host, 1.5f)), 36, "更多");
         acts.addView(mv, new LinearLayout.LayoutParams(
                 ModouUi.dp(host, 36), ModouUi.dp(host, 36)));
         top.addView(acts);
@@ -3730,7 +3720,7 @@ final class SourcesPanel {
         it.setOrientation(LinearLayout.VERTICAL);
         it.setGravity(Gravity.CENTER);
         ImageView ic = ModouUi.glyphBtn(host,
-                new ModouGlyph(glyph, color, ModouUi.dp(host, 20), ModouUi.dp(host, 1.7f)), 40);
+                new ModouGlyph(glyph, color, ModouUi.dp(host, 20), ModouUi.dp(host, 1.7f)), 40, label);
         ic.setOnClickListener(click);
         it.addView(ic, new LinearLayout.LayoutParams(
                 ModouUi.dp(host, 40), ModouUi.dp(host, 40)));
@@ -5379,33 +5369,80 @@ final class SourcesPanel {
     }
 
     private void showImport() {
-        EditText ed = new EditText(host);
-        ed.setHint("粘贴书源 JSON（单个对象或数组，可整段粘贴）");
-        ed.setTextSize(13);
-        ed.setTextColor(ui.text);
-        ed.setHintTextColor(ui.sub);
-        ed.setMinLines(6);
+        final EditText ed = ModouUi.input(host,
+                "粘贴书源 JSON（单个对象或数组，可整段粘贴）", "", 6);
         ed.setMaxLines(10);
-        ed.setBackground(ModouUi.round(ui.card, 8));
-        int p = ModouUi.dp(host, 10);
-        ed.setPadding(p, p, p, p);
         LinearLayout box = new LinearLayout(host);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(p + 4, p, p + 4, 0);
-        // 给宽高：以前 addView 不带参数，输入框按 wrap_content 缩成一条细缝，
-        // 用户看着像「点了没反应」
         box.addView(ed, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout footer = new LinearLayout(host);
+        footer.setOrientation(LinearLayout.VERTICAL);
         final Dialog d;
         try {
-            d = ModouUi.sheetForm(host, "导入书源", box);
+            d = ModouUi.sheetForm(host, "导入书源", box, footer);
         } catch (Throwable t) {
             ModouUi.toast(host, "面板打开失败：" + t.getMessage());
             return;
         }
-        box.addView(ModouUi.sheetButtons(host, d, "取消", "导入", null,
-                () -> doImport(String.valueOf(ed.getText()))));
+        final boolean[] checking = {false};
+        footer.addView(ModouUi.sheetButtonsGuarded(host, d, "取消", "导入", null, () -> {
+            if (checking[0]) return false;
+            final String raw = String.valueOf(ed.getText()).trim();
+            if (raw.isEmpty()) {
+                ed.setError("请粘贴书源 JSON");
+                ed.requestFocus();
+                return false;
+            }
+            checking[0] = true;
+            ed.setEnabled(false);
+            // 大合集也可能有几 MB：结构校验在后台做，失败不关窗、不丢草稿。
+            new Thread(() -> {
+                String error = validateSourcesJson(raw);
+                host.runOnUiThread(() -> {
+                    checking[0] = false;
+                    if (isGone() || !d.isShowing()) return;
+                    if (error != null) {
+                        ed.setEnabled(true);
+                        ed.setError(error);
+                        ed.requestFocus();
+                        return;
+                    }
+                    d.dismiss();
+                    doImport(raw);
+                });
+            }, "modou-source-json-check").start();
+            return false;
+        }));
+    }
+
+    /** 只做导入前校验，不写库；返回 null 表示至少有一个带地址的书源对象。 */
+    private static String validateSourcesJson(String raw) {
+        try {
+            int objects = 0;
+            int valid = 0;
+            if (raw.startsWith("[")) {
+                JSONArray a = new JSONArray(raw);
+                if (a.length() == 0) return "书源数组不能为空";
+                for (int i = 0; i < a.length(); i++) {
+                    JSONObject o = a.optJSONObject(i);
+                    if (o == null) continue;
+                    objects++;
+                    if (!o.optString("bookSourceUrl", "").trim().isEmpty()) valid++;
+                }
+            } else if (raw.startsWith("{")) {
+                JSONObject o = new JSONObject(raw);
+                objects = 1;
+                if (!o.optString("bookSourceUrl", "").trim().isEmpty()) valid = 1;
+            } else {
+                return "内容需以 { 或 [ 开头";
+            }
+            if (objects == 0) return "数组中没有书源对象";
+            return valid > 0 ? null : "书源缺少 bookSourceUrl 地址";
+        } catch (Exception e) {
+            return "JSON 格式不正确：" + brief(e);
+        }
     }
 
     /**
@@ -5586,43 +5623,30 @@ final class SourcesPanel {
             return;
         }
 
-        TextView cancel = ModouUi.tv(host, "取消", 15f, ui.text);
-        cancel.setGravity(Gravity.CENTER);
-        cancel.setTypeface(cancel.getTypeface(), Typeface.BOLD);
-        cancel.setPadding(0, ModouUi.dp(host, 13), 0, ModouUi.dp(host, 13));
-        cancel.setBackground(pillBtn(ModouUi.alpha(ui.text, 0x0E), ModouUi.alpha(ui.text, 0x1A)));
-        cancel.setOnClickListener((v) -> d.dismiss());
-
-        TextView merge = ModouUi.tv(host, "合并导入", 15f, 0xFFFFFFFF);
-        merge.setGravity(Gravity.CENTER);
-        merge.setTypeface(merge.getTypeface(), Typeface.BOLD);
-        merge.setPadding(0, ModouUi.dp(host, 13), 0, ModouUi.dp(host, 13));
-        merge.setBackground(pillBtn(ui.accent, 0x33FFFFFF));
+        TextView cancel = ModouUi.button(host, "取消",
+                DesignSpec.ButtonKind.TONAL, ModouUi.CAPSULE, v -> d.dismiss());
+        TextView merge = ModouUi.button(host, "合并导入",
+                DesignSpec.ButtonKind.FILLED, ModouUi.CAPSULE, null);
         merge.setOnClickListener((v) -> {
-            final String url = String.valueOf(ed.getText()).trim();
-            if (url.isEmpty()) {
-                ModouUi.toast(host, "请输入链接");
-                return;
-            }
+            final String url = validatedImportUrl(ed);
+            if (url == null) return;
             d.dismiss();
             startUrlImport(url, false);
         });
 
-        TextView over = ModouUi.tv(host, "覆盖导入", 15f, 0xFFE53935);
-        over.setGravity(Gravity.CENTER);
-        over.setTypeface(over.getTypeface(), Typeface.BOLD);
-        over.setPadding(0, ModouUi.dp(host, 13), 0, ModouUi.dp(host, 13));
-        over.setBackground(pillBtn(0x1AE53935, 0x33E53935));
+        TextView over = ModouUi.button(host, "覆盖导入",
+                DesignSpec.ButtonKind.OUTLINED, ModouUi.CAPSULE, null);
+        over.setTextColor(ui.danger);
         over.setOnClickListener((v) -> {
-            final String url = String.valueOf(ed.getText()).trim();
-            if (url.isEmpty()) {
-                ModouUi.toast(host, "请输入链接");
-                return;
-            }
-            d.dismiss();
+            final String url = validatedImportUrl(ed);
+            if (url == null) return;
+            // 原表单保持打开：用户取消覆盖确认后仍能回到原链接继续修改。
             ModouUi.confirm(host, "覆盖导入",
                     "覆盖导入会先清空当前全部书源，再写入下载到的书源。确定继续？",
-                    () -> startUrlImport(url, true));
+                    () -> {
+                        d.dismiss();
+                        startUrlImport(url, true);
+                    });
         });
 
         LinearLayout.LayoutParams lc = new LinearLayout.LayoutParams(0,
@@ -5638,6 +5662,24 @@ final class SourcesPanel {
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1.2f);
         lo.leftMargin = ModouUi.dp(host, 5);
         footer.addView(over, lo);
+    }
+
+    /** 表单内验证链接；失败时设置字段错误并保留弹窗与焦点。 */
+    private String validatedImportUrl(EditText ed) {
+        String url = String.valueOf(ed.getText()).trim();
+        try {
+            java.net.URI uri = new java.net.URI(url);
+            String scheme = uri.getScheme();
+            if (!("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme))
+                    || uri.getHost() == null || uri.getHost().isEmpty()) {
+                throw new IllegalArgumentException("invalid source url");
+            }
+            return url;
+        } catch (Exception e) {
+            ed.setError(url.isEmpty() ? "请输入链接" : "请输入有效的 http:// 或 https:// 链接");
+            ed.requestFocus();
+            return null;
+        }
     }
 
     /** 下载并导入：Loading → 下载 → 校验 JSON → 写库 → 刷新。异常均有明确提示，绝不静默。 */

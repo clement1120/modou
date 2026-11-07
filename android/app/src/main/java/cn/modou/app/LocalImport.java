@@ -149,6 +149,18 @@ final class LocalImport {
 
     /** 排队导入一本。串行执行：同一时间只有一本在解析。 */
     static void enqueue(Context c, Uri uri, String name, long size, Callback cb) {
+        enqueue(c, uri, name, size, null, cb);
+    }
+
+    /**
+     * 0.9.177：指定目标书 id 的导入（「补齐正文」用）。
+     *
+     * <p>重装 / 换机后 SAF 授权被系统撤销，备份里的本地书只有目录没有正文。
+     * 用户重新授权文件夹后，用这一条重解析原文件，但**沿用原 id**：
+     * 进度存在 {@code progress} 表、以 bookId 为键，id 不变 → 阅读进度、书签、分组全保留。
+     * 不指定 id 时会按「文件名 + 字节数」算新 id，字节数一变就成了另一本书。
+     */
+    static void enqueue(Context c, Uri uri, String name, long size, String targetId, Callback cb) {
         final Context app = c.getApplicationContext();
         final Task task = new Task();
         task.cb = cb;
@@ -163,7 +175,7 @@ final class LocalImport {
                 task.touch();
                 Res r;
                 try {
-                    r = run(app, uri, name, size, (text) -> {
+                    r = run(app, uri, name, size, targetId, (text) -> {
                         task.touch();
                         if (!task.abandoned && cb != null) MAIN.post(() -> cb.onStage(text));
                     });
@@ -200,6 +212,11 @@ final class LocalImport {
     /* ---------------- 导入主流程 ---------------- */
 
     private static Res run(Context c, Uri uri, String name, long size, Stage stage) {
+        return run(c, uri, name, size, null, stage);
+    }
+
+    private static Res run(Context c, Uri uri, String name, long size, String targetId,
+                           Stage stage) {
         Res r = new Res();
         String ext = LocalScan.extOf(name);
         if (!"txt".equals(ext) && !"epub".equals(ext)) {
@@ -238,7 +255,9 @@ final class LocalImport {
                 return r;
             }
 
-            String bookUrl = LOCAL + name + "#" + bytes;
+            String bookUrl = targetId != null && targetId.startsWith(LOCAL + "||")
+                    ? targetId.substring((LOCAL + "||").length())
+                    : LOCAL + name + "#" + bytes;
             id = LOCAL + "||" + bookUrl;
             String existed = store.get("books", id);
             if (existed != null) {

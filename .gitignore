@@ -8,6 +8,8 @@ android/local.properties
 *.aab
 *.keystore
 *.jks
+# 例外：本项目唯一的发布签名（换机器时唯一能保证覆盖安装的东西）
+!android/keystore/modou.jks
 
 # 系统与编辑器
 .DS_Store
@@ -25,3 +27,6 @@ Thumbs.db
 
 # Playwright 本地浏览器缓存（体积大，不入库）
 .playwright-browsers/
+
+# 真机调试截图与临时裁剪脚本（13MB，不入库；本地文件保留）
+android/device-shots/

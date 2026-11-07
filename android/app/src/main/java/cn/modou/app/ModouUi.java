@@ -248,13 +248,39 @@ final class ModouUi {
         a.setTheme(themeRes(lang, dark));
     }
 
+    /**
+     * 沉浸式（0.9.185）：让页面绘制到状态栏 / 导航栏之下，两条系统栏透明。
+     *
+     * <p>此前多数页面既让 decor 避开状态栏、又在内容里用 {@code statusBarPad()} 让了一次，
+     * 结果状态栏是一条与页面底衬不同的实色带（不沉浸），顶上还多出一段空白。
+     * 统一改成 edge-to-edge 后，内容位置不变（padding 正好顶回来），底衬一直铺到屏幕最顶。
+     *
+     * <p>调用前提：该页内容自己用 {@code statusBarPad()} 让过位。
+     */
+    static void edgeToEdge(Activity a) {
+        if (a == null) return;
+        try {
+            Window w = a.getWindow();
+            w.setStatusBarColor(Color.TRANSPARENT);
+            w.setNavigationBarColor(Color.TRANSPARENT);
+            w.setDecorFitsSystemWindows(false);
+            View decor = w.getDecorView();
+            int flags = decor.getSystemUiVisibility();
+            int light = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                    | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            decor.setSystemUiVisibility(isDark(a) ? (flags & ~light) : (flags | light));
+        } catch (Throwable ignore) {
+            /* 个别 ROM 不支持：退回默认，不影响页面本身 */
+        }
+    }
+
     /** 六套窗口底色的资源映射（3 语言 × 深浅）。冷启动闪屏由 values-night 兜底。 */
     static int themeRes(DesignSpec.Lang lang, boolean dark) {
         if (lang == null) lang = DesignSpec.Lang.MODOU;
         switch (lang) {
             case MATERIAL:
                 return dark ? R.style.Theme_Modou_Material_Dark : R.style.Theme_Modou_Material;
-            case LIQUID:
+            case MONOLITH:
                 return dark ? R.style.Theme_Modou_Liquid_Dark : R.style.Theme_Modou_Liquid;
             case MODOU:
             default:
@@ -305,6 +331,39 @@ final class ModouUi {
 
     static int topInset(Context c) {
         return dp(c, DesignSpec.of(c).topInset);
+    }
+
+    /**
+     * 0.9.203：全 App 唯一的系统栏 insets 换算，返回物理 px [left, top, right, bottom]。
+     * API 30+ 走 getInsetsIgnoringVisibility(systemBars|displayCutout)，与
+     * MainActivity.pushWindowInsets() 推给 WebView 的口径完全一致；低版本用资源 dimen 兜底。
+     * 以前书架页只读 DisplayCutout + 静态 navigation_bar_height，三键/手势切换时底部
+     * 留白不跟随，底部导航和抽屉会错位。
+     */
+    static int[] systemInsetsPx(Context c, android.view.WindowInsets ins) {
+        int[] o = new int[4];
+        if (android.os.Build.VERSION.SDK_INT >= 30 && ins != null) {
+            android.graphics.Insets i = ins.getInsetsIgnoringVisibility(
+                    android.view.WindowInsets.Type.systemBars()
+                            | android.view.WindowInsets.Type.displayCutout());
+            o[0] = i.left; o[1] = i.top; o[2] = i.right; o[3] = i.bottom;
+            return o;
+        }
+        android.content.res.Resources r = c.getResources();
+        int sid = r.getIdentifier("status_bar_height", "dimen", "android");
+        int nid = r.getIdentifier("navigation_bar_height", "dimen", "android");
+        o[1] = sid > 0 ? r.getDimensionPixelSize(sid) : dp(c, 24);
+        o[3] = nid > 0 ? r.getDimensionPixelSize(nid) : 0;
+        if (ins != null && android.os.Build.VERSION.SDK_INT >= 28) {
+            android.view.DisplayCutout dc = ins.getDisplayCutout();
+            if (dc != null) {
+                o[0] = dc.getSafeInsetLeft();
+                o[1] = Math.max(o[1], dc.getSafeInsetTop());
+                o[2] = dc.getSafeInsetRight();
+                o[3] = Math.max(o[3], dc.getSafeInsetBottom());
+            }
+        }
+        return o;
     }
 
     static TextView tv(Context c, CharSequence s, float sp, int color) {
@@ -368,11 +427,50 @@ final class ModouUi {
         t.setLetterSpacing(tracking);
     }
 
+    /**
+     * 0.9.172：页面入场动效（两页共用）。内容整体淡入 + 12dp 上浮，
+     * 时长读 {@code spec.durShort}、曲线用减速插值 —— 与画廊页的入场同一气质，
+     * 但更短，避免「每个页面都表演一次」。
+     */
+    static void enter(View v) {
+        ModouMotion.enter(v);
+    }
+
+    /**
+     * 圆角按压状态层（foreground 用）：不改背景本身的绘制，只叠一层按下去的高亮。
+     * 连续分组行 / filled 卡这类「背景要按位置算圆角」的容器用这个，
+     * 比把背景换成 StateListDrawable 更稳，也不会和 setBackground 的复用逻辑打架。
+     */
+    static Drawable pressOverlay(Context c, float rDp) {
+        DesignSpec sp = DesignSpec.of(c);
+        if (sp.material != DesignSpec.Material.GLASS) {
+            GradientDrawable normal = new GradientDrawable();
+            normal.setColor(0x00000000);
+            normal.setCornerRadius(dp(c, rDp));
+            GradientDrawable pressed = new GradientDrawable();
+            pressed.setColor(sp.statePressed);
+            pressed.setCornerRadius(dp(c, rDp));
+            android.graphics.drawable.StateListDrawable states =
+                    new android.graphics.drawable.StateListDrawable();
+            states.addState(new int[]{android.R.attr.state_pressed}, pressed);
+            states.addState(new int[]{android.R.attr.state_focused}, pressed);
+            states.addState(new int[]{}, normal);
+            return states;
+        }
+        android.graphics.drawable.GradientDrawable mask =
+                new android.graphics.drawable.GradientDrawable();
+        mask.setColor(0xFFFFFFFF);
+        mask.setCornerRadius(dp(c, rDp));
+        return new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(sp.statePressed), null, mask);
+    }
+
     /** 圆角纯色背景 */
     static GradientDrawable round(int color, float rDp) {
         GradientDrawable g = new GradientDrawable();
         g.setColor(color);
-        g.setCornerRadius(rDp * 3.2f); // 近似 dp→px（无 Context 时够用）
+        g.setCornerRadius(rDp * android.content.res.Resources.getSystem()
+                .getDisplayMetrics().density);
         return g;
     }
 
@@ -387,7 +485,8 @@ final class ModouUi {
      * 以后把卡片圆角往 28dp 提时不会跑形。
      */
     static Drawable squircle(int color, float rDp) {
-        return new SquircleDrawable(color, rDp * 3.2f, false, 0, 0);
+        return new SquircleDrawable(color, rDp * android.content.res.Resources.getSystem()
+                .getDisplayMetrics().density, false, 0, 0);
     }
 
     /**
@@ -409,7 +508,8 @@ final class ModouUi {
 
     /** 仅上方两角做 squircle（底部 sheet 用，下方贴屏不圆） */
     static Drawable squircleTop(int color, float rDp) {
-        return new SquircleDrawable(color, rDp * 3.2f, true, 0, 0);
+        return new SquircleDrawable(color, rDp * android.content.res.Resources.getSystem()
+                .getDisplayMetrics().density, true, 0, 0);
     }
 
     /** 弹层底板：按语言曲率 + 按锚点决定「四角圆」还是「仅上两角圆」 */
@@ -508,6 +608,114 @@ final class ModouUi {
         }
     }
 
+    /**
+     * 0.9.173：小控件（筛选 / 清缓存这类 chip）的三语言实现。
+     *
+     * <p>此前 `SourcesPanel.chipBtn`、`condChip`、`SettingsPanel.smallBtn` 各写一套：
+     * 999 胶囊 + 6% 墨色 + 12.5sp，三套语言共用同一颗。现在规格在
+     * {@code chip*} 里，调用点只给「文字 + 是否选中」：
+     * <ul>
+     *   <li>墨读：999 胶囊、未选中 6% 墨色 / 选中 toneAccent + 白字（原值）；</li>
+     *   <li>iOS 26：systemFill 胶囊、未选中次级灰 / 选中 systemBlue 淡染 + 蓝字；</li>
+     *   <li>M3：8dp outlined chip、未选中透明 + 1dp outline / 选中 secondaryContainer。</li>
+     * </ul>
+     */
+    static TextView chip(Context c, String label, boolean active, View.OnClickListener l) {
+        ModouUi u = of(c);
+        DesignSpec sp = u.spec;
+        int fg;
+        int fill;
+        if (active) {
+            switch (sp.chipStyle) {
+                case 1:
+                    fg = sp.sysBlue;
+                    fill = alpha(sp.sysBlue, 0x1F);
+                    break;
+                case 2:
+                    fg = sp.text;
+                    fill = sp.secondaryContainer;
+                    break;
+                default:
+                    fg = 0xFFFFFFFF;
+                    fill = toneAccent(c);
+                    break;
+            }
+        } else {
+            switch (sp.chipStyle) {
+                case 1:
+                    fg = u.sub;
+                    fill = sp.sysFill2;
+                    break;
+                case 2:
+                    fg = u.sub;
+                    fill = 0x00000000;
+                    break;
+                default:
+                    fg = u.sub;
+                    fill = alpha(u.text, 0x0F);
+                    break;
+            }
+        }
+        TextView t = tv(c, label, sp.chipLabelSp, fg);
+        t.setGravity(Gravity.CENTER);
+        t.setSingleLine(true);
+        int ph = dp(c, sp.chipPadHDp);
+        int pv = dp(c, sp.chipPadVDp);
+        t.setPadding(ph, pv, ph, pv);
+        t.setMinimumHeight(dp(c, sp.chipStyle == 0 ? 32 : 36));
+        t.setSelected(active);
+        t.setContentDescription(label + (active ? "，已选中" : ""));
+        boolean stroke = sp.chipStroke && !active;
+        t.setBackground(stroke
+                ? squircle(c, fill, sp.chipCornerDp, sp.outline, 1f)
+                : squircle(c, fill, sp.chipCornerDp));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.rightMargin = dp(c, 6);
+        t.setLayoutParams(lp);
+        t.setOnClickListener(l);
+        t.setClickable(true);
+        t.setFocusable(true);
+        ModouMotion.press(t, 0.98f);
+        return t;
+    }
+
+    /**
+     * 0.9.173：列表页顶部搜索框的三语言实现（书源页工具栏 / 本地书页共用）。
+     * 墨读仍走 {@link #input}（玻璃胶囊原样）；iOS / M3 用 {@link #searchBarBg} +
+     * {@code searchBarHDp / searchBarTextSp}，与搜索页同一组规格。
+     */
+    static android.widget.EditText searchField(Context c, String hint) {
+        DesignSpec sp = DesignSpec.of(c);
+        if (sp.searchBarStyle == 0) return input(c, hint, "", 1);
+        android.widget.EditText e = new android.widget.EditText(c);
+        e.setHint(hint);
+        e.setSingleLine(true);
+        e.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+        e.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, sp.searchBarTextSp);
+        e.setTextColor(of(c).text);
+        e.setHintTextColor(of(c).sub);
+        e.setBackground(searchBarBg(c));
+        e.setGravity(Gravity.CENTER_VERTICAL);
+        e.setContentDescription(hint);
+        ModouGlyph search = new ModouGlyph(ModouGlyph.SEARCH, of(c).sub,
+                dp(c, sp.searchBarIconDp), dp(c, 1.6f));
+        e.setCompoundDrawablesRelative(search, null, null, null);
+        e.setCompoundDrawablePadding(dp(c, sp.searchBarStyle == 2 ? 12 : 8));
+        int ph = dp(c, sp.searchBarStyle == 2 ? 18 : 12);
+        e.setPadding(ph, 0, ph, 0);
+        if (sp.searchBarStyle == 2) e.setElevation(dp(c, sp.searchBarElevDp));
+        e.setOnFocusChangeListener((v, focused) -> {
+            v.setBackground(searchBarBg(c, focused));
+            if (sp.searchBarStyle == 2) {
+                v.setElevation(dp(c, focused ? sp.searchFocusElevDp : sp.searchBarElevDp));
+            }
+        });
+        e.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(c, sp.searchBarHDp)));
+        return e;
+    }
+
     /** 玻璃胶囊（分段控件、chip 的选中态） */
     static Drawable glassPill(Context c) {
         DesignSpec sp = DesignSpec.of(c);
@@ -534,7 +742,8 @@ final class ModouUi {
      * 需要实时透出背后内容的面板，由独立窗口的 {@link ModouGlass#attach} 挂系统背景模糊。
      */
     static ModouGlassDrawable glassTop(int color, float rDp, int stroke) {
-        ModouGlassDrawable g = new ModouGlassDrawable(color, rDp * 3.2f, true);
+        ModouGlassDrawable g = new ModouGlassDrawable(color,
+                rDp * android.content.res.Resources.getSystem().getDisplayMetrics().density, true);
         g.setRimWidth(stroke);
         return g;
     }
@@ -657,7 +866,8 @@ final class ModouUi {
         LinearLayout l = new LinearLayout(c);
         l.setOrientation(LinearLayout.VERTICAL);
         l.setBackground(squircle(c, card, spec.cornerCard));
-        softShadow(l, 2);
+        if (spec.lang == DesignSpec.Lang.MONOLITH) l.setElevation(0f);
+        else softShadow(l, 2);
         int p = dp(c, spec.panelPadH);
         l.setPadding(p, p, p, p);
         return l;
@@ -686,7 +896,8 @@ final class ModouUi {
         // FrameLayout / 弹层内紧凑卡片，统一加 margin 会让很多页面和顶部工具条错位。
         // inset 由「接了图标的样板页」在内容容器上给 padding 实现，见 SettingsPanel.paint()。
         // M3 靠 elevation、iOS 靠分组留白（0dp），只有墨读有那圈柔光
-        softShadow(l, 2);
+        if (spec.lang == DesignSpec.Lang.MONOLITH) l.setElevation(0f);
+        else softShadow(l, 2);
         if (spec.concentric) {
             // B2（0.9.163）：iOS 26 同心圆角。组内首行只圆上两角、末行只圆下两角、
             // 中间行直角，半径 = 外卡圆角 − 内边距（等差数列）。用层级监听在每次
@@ -752,16 +963,22 @@ final class ModouUi {
      * API 28+ 可以把环境光/点光阴影染成极淡的墨色（10%），阴影就变成一圈柔光；
      * 低版本忽略，靠 elevation 兜底。
      */
-    static void softShadow(View v, int dpElevation) {
-        // 0.9.158：投影强度由语言决定（墨读 2dp 柔光 / M3 1dp / iOS 0）。
-        // 保留旧参数只为兼容调用点，实际取值走规格表。
-        float e = DesignSpec.of(v.getContext()).cardElevationDp;
-        v.setElevation(e > 0f ? dp(v.getContext(), e) : 0f);
-        if (e > 0f && android.os.Build.VERSION.SDK_INT >= 28) {
-            v.setOutlineAmbientShadowColor(0x1A101A29);
-            v.setOutlineSpotShadowColor(0x1A101A29);
-        }
-    }
+     static void softShadow(View v, int dpElevation) {
+         // 0.9.158：投影强度由语言决定（墨读 2dp 柔光 / M3 1dp / iOS 0）。
+         // 保留旧参数只为兼容调用点，实际取值走规格表。
+         // 0.9.181：阴影色也跟语言/深浅走 —— 墨读是暖墨柔光（略重），M3 / iOS 更淡，
+         // 靠 surface 分层而不是投影；夜里一律用纯黑，避免灰蓝色影子发脏。
+         DesignSpec sp = DesignSpec.of(v.getContext());
+         float e = sp.cardElevationDp;
+         v.setElevation(e > 0f ? dp(v.getContext(), e) : 0f);
+         if (e > 0f && android.os.Build.VERSION.SDK_INT >= 28) {
+             int c = sp.lang == DesignSpec.Lang.MODOU
+                     ? (sp.dark ? 0x33000000 : 0x1F101A29)
+                     : (sp.dark ? 0x26000000 : 0x14101722);
+             v.setOutlineAmbientShadowColor(c);
+             v.setOutlineSpotShadowColor(c);
+         }
+     }
 
     /**
      * 组行：左「标题 + 说明」竖排、右值；onClick 非空则整行可点（按压态走 ripple，
@@ -816,7 +1033,9 @@ final class ModouUi {
         if (minH > 0) l.setMinimumHeight(dp(c, minH));
 
         // leading 图标容器：墨读 / iconKey=0 时 ListIcon.create 返回 null，一行都不加
-        View lead = ListIcon.create(c, u, iconKey);
+        // 极简·纪：设置页等列表行去掉左侧圆形图标块，只留文字 + 细箭头
+        View lead = sp.lang == DesignSpec.Lang.MONOLITH
+                ? null : ListIcon.create(c, u, iconKey);
         if (lead != null) l.addView(lead);
 
         LinearLayout left = new LinearLayout(c);
@@ -828,24 +1047,38 @@ final class ModouUi {
         rt.setTag(TAG_ROW_TITLE);
         left.addView(rt);
         if (hint != null && !hint.isEmpty()) {
-            TextView s = tv(c, hint, sp.rowHintSp, u.sub);
+            boolean monoRow = sp.lang == DesignSpec.Lang.MONOLITH;
+            TextView s = tv(c, hint, monoRow ? 11f : sp.rowHintSp,
+                    monoRow ? alpha(u.sub, 0xCC) : u.sub);
             s.setLetterSpacing(sp.rowHintTracking);
             s.setPadding(0, dp(c, 2), 0, 0);
+            // 0.9.204：带行首图标的两套语言（M3/iOS）文字区被挤窄，副标改单行省略；
+            // 墨读无图标块、文字区宽，仍保留最多两行。行高从此不再参差。
+            s.setMaxLines(sp.listIconStyle == 0 ? 2 : 1);
+            s.setEllipsize(android.text.TextUtils.TruncateAt.END);
             left.addView(s);
         }
         l.addView(left);
 
         if (value != null && !value.isEmpty()) {
-            TextView v = tv(c, value, sp.rowHintSp + 1.5f, u.sub);
+            TextView v = tv(c, value,
+                    sp.lang == DesignSpec.Lang.MONOLITH ? 12f : sp.rowHintSp + 1.5f, u.sub);
             v.setLetterSpacing(sp.rowHintTracking);
             v.setPadding(dp(c, 10), 0, 0, 0);
+            // 0.9.185：右侧数值限宽 + 最多两行 + 右对齐，不再无限挤压左侧文案
+            v.setMaxWidth(dp(c, 132));
+            v.setMaxLines(sp.listIconStyle == 0 ? 2 : 1);
+            v.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            v.setGravity(Gravity.END);
             v.setTag(TAG_ROW_VALUE);
             l.addView(v);
         }
 
         // iOS grouped list 的 disclosure ›；M3 list item 不画（规格里 listChevron=false）
         if (sp.listChevron && onClick != null) {
-            TextView ch = tv(c, "›", sp.listChevronSp, alpha(u.text, 0x4D));
+            boolean monoChevron = sp.lang == DesignSpec.Lang.MONOLITH;
+            TextView ch = tv(c, "›", monoChevron ? 12f : sp.listChevronSp,
+                    alpha(u.text, monoChevron ? 0x66 : 0x4D));
             ch.setIncludeFontPadding(false);
             ch.setPadding(dp(c, 8), 0, 0, 0);
             l.addView(ch);
@@ -889,6 +1122,12 @@ final class ModouUi {
         ModouUi u = of(c);
         DesignSpec sp = u.spec;
         View v = new View(c);
+        if (sp.lang == DesignSpec.Lang.MONOLITH) {
+            // 极简·纪：卡片只靠底色微差分层，不画任何分隔线
+            v.setLayoutParams(new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0));
+            return v;
+        }
         boolean styled = iconized && sp.listIconStyle != 0;
         if (styled && sp.listNoDivider) {
             // 不能返回 null：所有 addView(groupDivider(...)) 调用点都还在；
@@ -913,8 +1152,11 @@ final class ModouUi {
     static TextView groupTitle(Context c, String text) {
         ModouUi u = of(c);
         DesignSpec sp = u.spec;
-        int color = sp.material == DesignSpec.Material.TONAL ? u.accent : u.sub;
-        TextView t = tv(c, text, sp.groupTitleSp, color);
+        // 0.9.204：M3 分组眉标原来取整页最刺眼的亮蓝 u.accent，和灰正文层级倒挂；
+        // 统一走 u.sub，字号/字重/字距仍由 TypeScale 分流，语言特征不变。
+        int color = u.sub;
+        boolean monoGroup = sp.lang == DesignSpec.Lang.MONOLITH;
+        TextView t = tv(c, text, monoGroup ? 11f : sp.groupTitleSp, color);
         // 0.9.163 A8：字重与字距改从 15 档字阶表派生（M3 titleSmall 500/0.007em、
         // iOS footnote 13sp/0.006em、墨读 15sp 粗体），不再按 material 写死分支。
         applyType(t, sp.groupTitleWeight, sp.groupTitleTracking,
@@ -1000,9 +1242,17 @@ final class ModouUi {
 
     static void toast(Context c, String s) {
         try {
-            Toast.makeText(c, s, Toast.LENGTH_SHORT).show();
-        } catch (Exception e) {
-            /* 通知栏受限的 ROM：忽略，不能因提示失败而崩 */
+            ModouFeedback.show(c, s);
+        } catch (Throwable ignore) {
+            /* 页面正在销毁时不再强行弹系统样式提示 */
+        }
+    }
+
+    static void centerToast(Context c, String s) {
+        try {
+            ModouFeedback.showCenter(c, s);
+        } catch (Throwable ignore) {
+            /* 页面正在销毁时不再强行弹系统样式提示 */
         }
     }
 
@@ -1100,14 +1350,92 @@ final class ModouUi {
 
     /** 空态 */
     static TextView empty(Context c, String s) {
-        TextView t = tv(c, s, 14, of(c).sub);
+        ModouUi u = of(c);
+        TextView t = tv(c, s, u.spec.bodySp - 1f, u.sub);
         t.setGravity(Gravity.CENTER);
-        t.setPadding(dp(c, 16), dp(c, 40), dp(c, 16), dp(c, 40));
+        t.setLineSpacing(dp(c, 3), 1.2f);
+        ModouGlyph glyph = new ModouGlyph(ModouGlyph.BOOK, alpha(u.sub, 0xA0),
+                dp(c, 38), dp(c, 1.5f));
+        t.setCompoundDrawables(null, glyph, null, null);
+        t.setCompoundDrawablePadding(dp(c, 18));
+        t.setPadding(dp(c, 24), dp(c, 56), dp(c, 24), dp(c, 56));
+        t.setContentDescription(s);
         return t;
     }
 
     static int alpha(int color, int a) {
         return (a << 24) | (color & 0x00FFFFFF);
+    }
+
+    /** 小图形保持小巧，但实际触摸区扩展到 48dp；由父容器裁切时自动跳过。 */
+    static void expandTouch(View v, float minDp) {
+        if (v == null) return;
+        ViewParentSafe.post(v, minDp);
+    }
+
+    private static final class ViewParentSafe {
+        static void post(View v, float minDp) {
+            v.post(() -> {
+                if (!(v.getParent() instanceof View)) return;
+                View parent = (View) v.getParent();
+                int min = dp(v.getContext(), minDp);
+                int dx = Math.max(0, min - v.getWidth());
+                int dy = Math.max(0, min - v.getHeight());
+                if (dx == 0 && dy == 0) return;
+                android.graphics.Rect hit = new android.graphics.Rect();
+                hit.set(v.getLeft() - dx / 2, v.getTop() - dy / 2,
+                        v.getRight() + (dx + 1) / 2, v.getBottom() + (dy + 1) / 2);
+                android.view.TouchDelegate delegate = new android.view.TouchDelegate(hit, v);
+                android.view.TouchDelegate old = parent.getTouchDelegate();
+                if (old instanceof TouchDelegateComposite) {
+                    ((TouchDelegateComposite) old).add(delegate);
+                } else if (old == null) {
+                    parent.setTouchDelegate(delegate);
+                } else {
+                    // 同一父容器有多个小按钮时，用 delegate 组合，避免后一个覆盖前一个。
+                    parent.setTouchDelegate(new TouchDelegateComposite(parent.getContext(), old, delegate));
+                }
+            });
+        }
+    }
+
+    /** framework 没有公开的 TouchDelegate 组合类；这里按命中矩形逐个转发。 */
+    private static final class TouchDelegateComposite extends android.view.TouchDelegate {
+        private final java.util.ArrayList<android.view.TouchDelegate> delegates =
+                new java.util.ArrayList<>();
+        TouchDelegateComposite(Context c, android.view.TouchDelegate a,
+                               android.view.TouchDelegate b) {
+            super(new android.graphics.Rect(), new View(c));
+            delegates.add(a);
+            delegates.add(b);
+        }
+        void add(android.view.TouchDelegate d) { delegates.add(d); }
+        @Override public boolean onTouchEvent(android.view.MotionEvent event) {
+            for (android.view.TouchDelegate d : delegates) {
+                if (d.onTouchEvent(event)) return true;
+            }
+            return false;
+        }
+    }
+
+    static String glyphDescription(int glyph) {
+        switch (glyph) {
+            case ModouGlyph.BACK: return "返回";
+            case ModouGlyph.SEARCH: return "搜索";
+            case ModouGlyph.MORE_H:
+            case ModouGlyph.MORE_V: return "更多操作";
+            case ModouGlyph.CLOSE: return "关闭";
+            case ModouGlyph.PLUS:
+            case ModouGlyph.ADD: return "添加";
+            case ModouGlyph.REFRESH: return "刷新";
+            case ModouGlyph.EDIT: return "编辑";
+            case ModouGlyph.TRASH: return "删除";
+            case ModouGlyph.FILTER: return "筛选";
+            case ModouGlyph.BOOKMARK: return "书签";
+            case ModouGlyph.GEAR: return "设置";
+            case ModouGlyph.CHECK: return "确认";
+            default: return "操作";
+        }
     }
 
     /**
@@ -1132,6 +1460,11 @@ final class ModouUi {
      * 底几乎没有颜色，只有图标本身在说话。
      */
     static ImageView glyphBtn(Context c, Drawable glyph, int boxDp) {
+        return glyphBtn(c, glyph, boxDp, null);
+    }
+
+    /** 0.9.203：不传 label 时 TalkBack 只会念「操作」，同页多颗图标钮完全无法区分。 */
+    static ImageView glyphBtn(Context c, Drawable glyph, int boxDp, String label) {
         ModouUi u = of(c);
         ImageView iv = new ImageView(c);
         iv.setScaleType(ImageView.ScaleType.CENTER);
@@ -1146,11 +1479,18 @@ final class ModouUi {
         GradientDrawable mask = new GradientDrawable();
         mask.setColor(0xFFFFFFFF);
         mask.setCornerRadius(dp(c, 999));
-        iv.setBackground(new android.graphics.drawable.RippleDrawable(
-                android.content.res.ColorStateList.valueOf(
-                        u.dark ? 0x26FFFFFF : 0x14000000), bg, mask));
+        iv.setBackground(u.spec.material == DesignSpec.Material.GLASS
+                ? new android.graphics.drawable.RippleDrawable(
+                        android.content.res.ColorStateList.valueOf(
+                                u.dark ? 0x26FFFFFF : 0x14000000), bg, mask)
+                : stateLayerBg(c, u.spec, 0x00000000, boxDp / 2f));
+        String desc = (label == null || label.isEmpty()) ? "操作" : label;
+        iv.setContentDescription(desc);
+        if (android.os.Build.VERSION.SDK_INT >= 26) iv.setTooltipText(desc);
         iv.setClickable(true);
         iv.setFocusable(true);
+        expandTouch(iv, 48);
+        ModouMotion.press(iv);
         return iv;
     }
 
@@ -1180,26 +1520,41 @@ final class ModouUi {
      */
     static ImageView topBtn(Context c, int glyph, int boxDp, int color, View.OnClickListener l) {
         ModouUi u = of(c);
+        DesignSpec sp = u.spec;
         ImageView iv = new ImageView(c);
-        int b = dp(c, boxDp);
+        int visualDp = sp.material == DesignSpec.Material.GLASS ? boxDp : Math.max(40, boxDp);
+        int b = dp(c, visualDp);
         iv.setLayoutParams(new LinearLayout.LayoutParams(b, b));
         iv.setScaleType(ImageView.ScaleType.CENTER);
-        int fg = color != 0 ? color : (u.dark ? 0xFFE6E7E9 : u.text);
-        float gs = boxDp < 40 ? TOP_GLYPH_DP - 2f : TOP_GLYPH_DP;
-        iv.setImageDrawable(new ModouGlyph(glyph, fg, dp(c, gs), dp(c, TOP_STROKE_DP)));
-        // 底板按语言：墨读纯白/深灰圆钮、M3 surface 容器圆钮、iOS 淡蓝 tint 圆钮
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(plateColor(u));
-        bg.setCornerRadius(b / 2f);
-        GradientDrawable mask = new GradientDrawable();
-        mask.setColor(0xFFFFFFFF);
-        mask.setCornerRadius(b / 2f);
-        iv.setBackground(new android.graphics.drawable.RippleDrawable(
-                android.content.res.ColorStateList.valueOf(
-                        u.dark ? 0x26FFFFFF : 0x14000000), bg, mask));
+        int fg = color != 0 ? color : sp.material == DesignSpec.Material.LIQUID
+                ? sp.sysBlue : sp.material == DesignSpec.Material.TONAL ? u.text
+                : (u.dark ? 0xFFE6E7E9 : u.text);
+        float gs = sp.material == DesignSpec.Material.TONAL ? 22f
+                : sp.material == DesignSpec.Material.LIQUID ? 20f
+                : boxDp < 40 ? TOP_GLYPH_DP - 2f : TOP_GLYPH_DP;
+        iv.setImageDrawable(new ModouGlyph(glyph, fg, dp(c, gs),
+                dp(c, sp.material == DesignSpec.Material.LIQUID ? 1.65f : TOP_STROKE_DP)));
+        if (sp.material == DesignSpec.Material.GLASS) {
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(plateColor(u));
+            bg.setCornerRadius(b / 2f);
+            GradientDrawable mask = new GradientDrawable();
+            mask.setColor(0xFFFFFFFF);
+            mask.setCornerRadius(b / 2f);
+            iv.setBackground(new android.graphics.drawable.RippleDrawable(
+                    android.content.res.ColorStateList.valueOf(
+                            u.dark ? 0x26FFFFFF : 0x14000000), bg, mask));
+        } else {
+            // 平台导航栏使用无底板的标准图标按钮；按下时才出现圆形 state layer。
+            iv.setBackground(stateLayerBg(c, sp, 0x00000000, visualDp / 2f));
+        }
+        iv.setContentDescription(glyphDescription(glyph));
+        iv.setTooltipText(glyphDescription(glyph));
         iv.setOnClickListener(l);
         iv.setClickable(true);
         iv.setFocusable(true);
+        expandTouch(iv, 48);
+        ModouMotion.press(iv);
         return iv;
     }
 
@@ -1233,43 +1588,144 @@ final class ModouUi {
         DesignSpec sp = u.spec;
         boolean tonal = sp.material == DesignSpec.Material.TONAL;
         boolean liquid = sp.material == DesignSpec.Material.LIQUID;
-        int radius = tonal ? 8 : liquid ? 9 : 999;
+        int radius = tonal ? 22 : liquid ? 10 : 999;
 
         LinearLayout seg = new LinearLayout(c);
         seg.setOrientation(LinearLayout.HORIZONTAL);
         seg.setClipChildren(false);
         seg.setClipToPadding(false);
         GradientDrawable track = new GradientDrawable();
-        track.setColor(tonal ? sp.surfaceLow : alpha(u.text, 0x12));
+        track.setColor(tonal ? 0x00000000 : liquid ? sp.sysFill3 : alpha(u.text, 0x12));
         track.setCornerRadius(dp(c, radius));
-        if (tonal) track.setStroke(Math.max(1, dp(c, 1)), sp.line);
+        if (tonal) track.setStroke(Math.max(1, dp(c, 1)), sp.outline);
         seg.setBackground(track);
-        int pad = dp(c, 3);
+        int pad = dp(c, tonal ? 0 : liquid ? 2 : 3);
         seg.setPadding(pad, pad, pad, pad);
+        seg.setContentDescription("选项");
 
         for (int i = 0; i < labels.length; i++) {
             final int idx = i;
             boolean on = i == selected;
-            int fg = on ? (tonal ? sp.onContainer : liquid ? u.text : 0xFFFFFFFF) : u.text;
-            TextView t = tv(c, labels[i], liquid ? 13f : 13.5f, fg);
+            int fg = on ? (tonal ? sp.text : liquid ? u.text : 0xFFFFFFFF) : u.text;
+            TextView t = tv(c, labels[i], liquid ? 13f : tonal ? 14f : 13.5f, fg);
             t.setGravity(Gravity.CENTER);
             t.setSingleLine(true);
-            if (on) {
-                GradientDrawable g = new GradientDrawable();
-                g.setColor(tonal ? sp.container : liquid ? sp.surface : toneAccent(c));
-                g.setCornerRadius(dp(c, radialCorner(sp, radius)));
-                t.setBackground(g);
-                t.setElevation(dp(c, liquid ? 1 : 2));
+            t.setSelected(on);
+            t.setContentDescription(labels[i] + (on ? "，已选中" : ""));
+            if (tonal || liquid || on) {
+                int fill = tonal ? (on ? sp.secondaryContainer : 0x00000000)
+                        : liquid ? (on ? sp.surfaceHigh : 0x00000000) : toneAccent(c);
+                float left = tonal ? (i == 0 ? 21f : 8f) : radialCorner(sp, radius);
+                float right = tonal ? (i == labels.length - 1 ? 21f : 8f) : radialCorner(sp, radius);
+                t.setBackground(segmentState(c, sp, fill, left, right));
+                if (on) t.setElevation(dp(c, liquid ? 2 : 0));
             }
+            if (tonal || on) t.setTypeface(android.graphics.Typeface.create(
+                    "sans-serif-medium", android.graphics.Typeface.NORMAL));
             t.setOnClickListener(v -> {
+                ModouMotion.tick(t);
                 if (onPick != null) onPick.accept(idx);
             });
+            t.setFocusable(true);
+            ModouMotion.press(t, 0.985f);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                    0, dp(c, 36), 1f);
-            if (i > 0) lp.leftMargin = dp(c, 3);
+                    0, dp(c, tonal ? 44 : liquid ? 32 : 36), 1f);
+            if (i > 0 && !tonal && !liquid) lp.leftMargin = dp(c, 3);
             seg.addView(t, lp);
         }
         return seg;
+    }
+
+    /** 阅读排版分段：复用全局形状、字阶和状态层，选中态随纸张而非全局页面色。 */
+    static LinearLayout readerSegment(Context c, String[] labels, int selected,
+                                      IntConsumer onPick, NativeTheme paper) {
+        DesignSpec sp = DesignSpec.of(c);
+        boolean tonal = sp.material == DesignSpec.Material.TONAL;
+        boolean liquid = sp.material == DesignSpec.Material.LIQUID;
+        int radius = tonal ? 22 : liquid ? 10 : 999;
+        LinearLayout seg = new LinearLayout(c);
+        seg.setOrientation(LinearLayout.HORIZONTAL);
+        seg.setClipChildren(false);
+        seg.setClipToPadding(false);
+        GradientDrawable track = new GradientDrawable();
+        track.setColor(tonal ? alpha(paper.text, 0x08)
+                : liquid ? alpha(paper.text, 0x0D) : alpha(paper.text, 0x12));
+        track.setCornerRadius(dp(c, radius));
+        if (tonal) track.setStroke(Math.max(1, dp(c, 1)), alpha(paper.text, 0x38));
+        seg.setBackground(track);
+        int pad = dp(c, tonal ? 0 : liquid ? 2 : 3);
+        seg.setPadding(pad, pad, pad, pad);
+        seg.setTag(labels);
+        for (int i = 0; i < labels.length; i++) {
+            final int idx = i;
+            TextView t = tv(c, labels[i], liquid ? 13f : tonal ? 14f : 13.5f, paper.text);
+            t.setGravity(Gravity.CENTER);
+            t.setSingleLine(true);
+            t.setFocusable(true);
+            t.setOnClickListener(v -> {
+                paintReaderSegment(c, seg, paper, idx);
+                ModouMotion.tick(t);
+                if (onPick != null) onPick.accept(idx);
+            });
+            ModouMotion.press(t, 0.985f);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    0, dp(c, tonal ? 44 : liquid ? 36 : 38), 1f);
+            if (i > 0 && !tonal && !liquid) lp.leftMargin = dp(c, 3);
+            seg.addView(t, lp);
+        }
+        paintReaderSegment(c, seg, paper, selected);
+        return seg;
+    }
+
+    private static void paintReaderSegment(Context c, LinearLayout seg,
+                                           NativeTheme paper, int selected) {
+        DesignSpec sp = DesignSpec.of(c);
+        String[] labels = seg.getTag() instanceof String[] ? (String[]) seg.getTag() : null;
+        boolean tonal = sp.material == DesignSpec.Material.TONAL;
+        boolean liquid = sp.material == DesignSpec.Material.LIQUID;
+        int radius = tonal ? 22 : liquid ? 10 : 999;
+        for (int i = 0; i < seg.getChildCount(); i++) {
+            View v = seg.getChildAt(i);
+            if (!(v instanceof TextView)) continue;
+            TextView t = (TextView) v;
+            boolean on = i == selected;
+            String label = labels != null && i < labels.length ? labels[i] : String.valueOf(t.getText());
+            t.setText(label);
+            t.setTextColor(on ? (sp.material == DesignSpec.Material.GLASS
+                    ? (paper.dark ? 0xFF1B1D21 : 0xFFFFFFFF) : paper.acc) : paper.sub);
+            t.setSelected(on);
+            t.setContentDescription(label + (on ? "，已选中" : "，未选中"));
+            t.setStateDescription(on ? "已选中" : "未选中");
+            t.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                    android.graphics.Typeface.NORMAL));
+            int fill = on ? (tonal ? alpha(paper.acc, 0x2E)
+                    : liquid ? alpha(paper.card, 0xF2) : paper.acc) : 0x00000000;
+            float left = tonal ? (i == 0 ? 21f : 8f) : radialCorner(sp, radius);
+            float right = tonal ? (i == seg.getChildCount() - 1 ? 21f : 8f)
+                    : radialCorner(sp, radius);
+            t.setBackground(segmentState(c, sp, fill, left, right));
+            t.setElevation(dp(c, on && liquid ? 2 : 0));
+        }
+    }
+
+    private static Drawable segmentState(Context c, DesignSpec sp, int fill,
+                                         float leftDp, float rightDp) {
+        GradientDrawable normal = new GradientDrawable();
+        normal.setColor(fill);
+        float l = dp(c, leftDp), r = dp(c, rightDp);
+        normal.setCornerRadii(new float[]{l, l, r, r, r, r, l, l});
+        GradientDrawable pressed = new GradientDrawable();
+        pressed.setColor(sp.statePressed);
+        pressed.setCornerRadii(new float[]{l, l, r, r, r, r, l, l});
+        if (sp.material == DesignSpec.Material.GLASS) {
+            return new android.graphics.drawable.RippleDrawable(
+                    android.content.res.ColorStateList.valueOf(sp.ripple), normal, pressed);
+        }
+        android.graphics.drawable.StateListDrawable states = new android.graphics.drawable.StateListDrawable();
+        states.addState(new int[]{android.R.attr.state_pressed}, pressed);
+        states.addState(new int[]{android.R.attr.state_focused}, pressed);
+        states.addState(new int[]{}, normal);
+        return states;
     }
 
     private static int radialCorner(DesignSpec sp, int trackRadius) {
@@ -1493,10 +1949,10 @@ final class ModouUi {
                                 View t = target();
                                 if (moved && dy > dp(a, 80)) {
                                     t.animate().translationY(t.getHeight() + dp(a, 40))
-                                            .alpha(0f).setDuration(sp.durMed)
+                                            .alpha(0f).setDuration(ModouMotion.duration(a, sp.durMed))
                                             .withEndAction(d::dismiss).start();
                                 } else {
-                                    t.animate().translationY(0f).setDuration(sp.durMed).start();
+                                    t.animate().translationY(0f).setDuration(ModouMotion.duration(a, sp.durMed)).start();
                                 }
                                 return true;
                             }
@@ -1599,7 +2055,7 @@ final class ModouUi {
         // A3/B9 弹层入场动画（0.9.162）：内容层做 alpha + 位移/缩放，走 DesignSpec 全局 spring。
         // 只动 panelBox 的绘制属性，不碰窗口 gravity / bounds / setLayout（骨架不动）。
         // 墨读沿用 Decelerate；M3 Dialog 是 fade+scale（不过冲），M3/iOS 贴底是上滑 spring。
-        if (sp.sheetEnterAnim) {
+        if (sp.sheetEnterAnim && ModouMotion.scale(a) > 0f) {
             final View animTarget = panelBox;
             animTarget.animate().cancel();
             if (centered) {
@@ -1607,14 +2063,14 @@ final class ModouUi {
                 animTarget.setScaleX(0.92f);
                 animTarget.setScaleY(0.92f);
                 animTarget.animate().alpha(1f).scaleX(1f).scaleY(1f)
-                        .setDuration(sp.durMed)
+                        .setDuration(ModouMotion.duration(a, sp.durMed))
                         .setInterpolator(DesignSpec.interpolator(sp, false, 1.6f))
                         .start();
             } else {
                 animTarget.setAlpha(0f);
                 animTarget.setTranslationY(dp(a, 36));
                 animTarget.animate().alpha(1f).translationY(0f)
-                        .setDuration(sp.durMed)
+                        .setDuration(ModouMotion.duration(a, sp.durMed))
                         .setInterpolator(DesignSpec.interpolator(sp, true, 1.6f))
                         .start();
             }
@@ -1682,6 +2138,156 @@ final class ModouUi {
 
         // 背板模糊由 ModouFrost 在面板上屏后自己抓 + GPU 卷积，这里不再做 CPU 抓图
         return d;
+    }
+
+    /**
+     * 阅读器专用弹层的结构句柄。
+     *
+     * <p>阅读器必须继续拥有关闭动画、实例守卫、滑杆避让与玻璃流光，因此这里只交付
+     * 窗口和视图结构，不接管 dismiss 生命周期，也不额外包 ScrollView。普通 sheet
+     * 的默认行为完全不变。
+     */
+    static final class SheetHandle {
+        Dialog dialog;
+        android.widget.FrameLayout root;
+        LinearLayout panel;
+        View shell;
+    }
+
+    /** 三语言阅读面板：纸张决定文字与色调，DesignSpec 决定形状、材质、字阶与锚点。 */
+    static SheetHandle readerSheet(Activity a, String title, View content,
+                                   NativeTheme paper, Runnable onClose) {
+        ModouUi u = of(a);
+        DesignSpec sp = u.spec;
+        boolean land = a.getResources().getConfiguration().orientation
+                == android.content.res.Configuration.ORIENTATION_LANDSCAPE;
+        DesignSpec.SheetAnchor anchor = sp.sheetAnchor;
+        float radius = sp.sheetRadiusDp;
+        SheetHandle h = new SheetHandle();
+        h.root = new android.widget.FrameLayout(a);
+        h.root.setPadding(0, 0, 0,
+                anchor == DesignSpec.SheetAnchor.FLOAT_BOTTOM && !land ? dp(a, 12)
+                        : anchor == DesignSpec.SheetAnchor.BOTTOM_INSET ? dp(a, 8) : 0);
+
+        h.panel = new LinearLayout(a);
+        h.panel.setOrientation(LinearLayout.VERTICAL);
+        h.panel.setClickable(true);
+        if (sp.material == DesignSpec.Material.GLASS) {
+            ModouGlassDrawable bg = new ModouGlassDrawable(
+                    alpha(paper.card, 0x0F), dp(a, radius), false);
+            bg.setRimWidth(dp(a, 2.5f));
+            h.panel.setBackground(bg);
+        } else {
+            // 阅读纸色仍占主导，只混入少量全局容器色来建立 M3/iOS 的材质层级。
+            int base = sp.material == DesignSpec.Material.TONAL
+                    ? mix(paper.card, sp.surfaceHigh, 0.28f)
+                    : mix(paper.card, sp.glassBase, 0.20f);
+            h.panel.setBackground(panelBg(a, base, radius,
+                    anchor == DesignSpec.SheetAnchor.BOTTOM_FULL));
+        }
+        h.panel.setPadding(dp(a, sp.panelPadH), dp(a, sp.panelPadT),
+                dp(a, sp.panelPadH), dp(a, sp.panelPadB));
+
+        if (sp.sheetHandle) {
+            View grip = new View(a);
+            GradientDrawable gg = new GradientDrawable();
+            gg.setColor(alpha(paper.text, sp.material == DesignSpec.Material.LIQUID
+                    ? 0x30 : 0x42));
+            gg.setCornerRadius(dp(a, 999));
+            grip.setBackground(gg);
+            android.widget.FrameLayout gripBox = new android.widget.FrameLayout(a);
+            gripBox.setContentDescription("弹层拖动把手");
+            android.widget.FrameLayout.LayoutParams gl = new android.widget.FrameLayout.LayoutParams(
+                    dp(a, sp.material == DesignSpec.Material.TONAL ? 32 : 36),
+                    dp(a, sp.material == DesignSpec.Material.LIQUID ? 5 : 4));
+            gl.gravity = Gravity.CENTER;
+            gripBox.addView(grip, gl);
+            LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(a, 18));
+            glp.bottomMargin = dp(a, 2);
+            h.panel.addView(gripBox, glp);
+        }
+
+        LinearLayout head = new LinearLayout(a);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setMinimumHeight(dp(a, 48));
+        if (sp.sheetTitleCenter) {
+            View balance = new View(a);
+            head.addView(balance, new LinearLayout.LayoutParams(dp(a, 48), dp(a, 48)));
+        }
+        TextView t = tv(a, title == null ? "" : title, sp.sheetTitleSp, paper.text);
+        t.setSingleLine(true);
+        t.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        t.setGravity(sp.sheetTitleCenter ? Gravity.CENTER : Gravity.START);
+        if (sp.sheetTitleSerif) {
+            t.setTypeface(android.graphics.Typeface.SERIF, android.graphics.Typeface.BOLD);
+        } else {
+            t.setTypeface(android.graphics.Typeface.DEFAULT,
+                    sp.sheetTitleWeight == 1 ? android.graphics.Typeface.BOLD
+                            : android.graphics.Typeface.NORMAL);
+        }
+        head.addView(t, new LinearLayout.LayoutParams(0, dp(a, 48), 1f));
+        ImageView close = topBtn(a, ModouGlyph.CLOSE, 48, paper.sub,
+                v -> { if (onClose != null) onClose.run(); });
+        close.setContentDescription("关闭" + (title == null || title.isEmpty()
+                ? "面板" : title));
+        close.setTooltipText(close.getContentDescription());
+        head.addView(close, new LinearLayout.LayoutParams(dp(a, 48), dp(a, 48)));
+        h.panel.addView(head);
+
+        if (content != null) {
+            if (content.getParent() instanceof ViewGroup) {
+                ((ViewGroup) content.getParent()).removeView(content);
+            }
+            h.panel.addView(content);
+        }
+        h.shell = sp.sheetBlur ? ModouFrost.wrap(h.panel, radius) : h.panel;
+        android.widget.FrameLayout.LayoutParams plp = new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        plp.gravity = Gravity.BOTTOM;
+        h.root.addView(h.shell, plp);
+
+        Dialog d = new Dialog(a, R.style.Theme_Modou_Glass);
+        h.dialog = d;
+        d.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        d.setContentView(h.root);
+        d.setCanceledOnTouchOutside(true);
+        Window w = d.getWindow();
+        if (w != null) {
+            w.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            w.setDimAmount(paper.dark ? 0.50f : 0.34f);
+            w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        }
+        d.show();
+        if (w != null && sp.sheetBlur) ModouGlass.attach(w, dp(a, radius));
+        if (w != null) {
+            final Window win = w;
+            final View base = a.getWindow() == null ? null : a.getWindow().getDecorView();
+            final int[] applied = {-1};
+            Runnable fit = () -> {
+                int sw = base == null ? 0 : base.getWidth();
+                if (sw <= 0) sw = a.getResources().getDisplayMetrics().widthPixels;
+                if (sw <= 0 || applied[0] == sw) return;
+                applied[0] = sw;
+                int ww;
+                if (anchor == DesignSpec.SheetAnchor.BOTTOM_FULL) {
+                    ww = Math.min(sw, dp(a, sp.sheetMaxWidthDp));
+                } else if (anchor == DesignSpec.SheetAnchor.BOTTOM_INSET) {
+                    ww = sw - dp(a, sp.sheetSideMarginDp * 2);
+                } else if (land) {
+                    ww = Math.min((int) (sw * sp.sheetLandRatio), dp(a, 560));
+                } else {
+                    ww = Math.min(sw - dp(a, 20), dp(a, sp.sheetMaxWidthDp));
+                }
+                win.setLayout(Math.max(1, ww), ViewGroup.LayoutParams.WRAP_CONTENT);
+            };
+            win.getDecorView().addOnLayoutChangeListener(
+                    (v, l, top, r, b, ol, ot, or, ob) -> fit.run());
+            fit.run();
+        }
+        return h;
     }
 
     /** 纯文字列表弹层：锚点按语言（M3 贴底全宽 sheet / iOS Action Sheet / 墨读浮岛） */
@@ -1813,32 +2419,34 @@ final class ModouUi {
         android.widget.EditText ed = new android.widget.EditText(c);
         ed.setHint(hint);
         ed.setText(value == null ? "" : value);
-        ed.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp.bodySp - 2f);
+        ed.setTextSize(TypedValue.COMPLEX_UNIT_SP,
+                sp.material == DesignSpec.Material.GLASS ? sp.bodySp - 1f : sp.bodySp);
         ed.setTextColor(u.text);
-        ed.setHintTextColor(u.sub);
+        ed.setHintTextColor(sp.material == DesignSpec.Material.LIQUID ? sp.labelTertiary : u.sub);
         ed.setMinLines(minLines);
-        if (sp.material == DesignSpec.Material.TONAL) {
-            // M3 Outlined text field：透明底 + 1dp 描边 + 4dp 圆角
-            GradientDrawable g = new GradientDrawable();
-            g.setColor(0x00000000);
-            g.setCornerRadius(dp(c, 4));
-            g.setStroke(Math.max(1, dp(c, 1)), u.sub);
-            ed.setBackground(g);
-        } else if (sp.material == DesignSpec.Material.LIQUID) {
-            // iOS：分组内的圆角输入框，弱底、10dp
-            ed.setBackground(round(alpha(u.text, 0x0A), 10));
-        } else {
-            ed.setBackground(round(alpha(u.text, 0x0F), sp.cornerS));
-        }
-        ed.setPadding(dp(c, 12), dp(c, 10), dp(c, 12), dp(c, 10));
-        // 表单里常常是「书名 / 作者 / 封面」这样连着排几行：不给间距的话几个圆角色块
-        // 会首尾贴在一起，圆角互相啃掉一块，看着就像「三行框叠在一起」。
-        // 在这里给统一的下间距，竖排容器的调用点就不用各自补了。
+        ed.setGravity(minLines > 1 ? Gravity.TOP | Gravity.START : Gravity.CENTER_VERTICAL);
+        ed.setBackground(inputBackground(c, false));
+        ed.setPadding(dp(c, 14), dp(c, 12), dp(c, 14), dp(c, 12));
+        ed.setMinimumHeight(dp(c, minLines > 1 ? 52 : 52));
+        ed.setContentDescription(hint);
+        ed.setOnFocusChangeListener((v, focused) -> v.setBackground(inputBackground(c, focused)));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(c, 8);
+        lp.bottomMargin = dp(c, 10);
         ed.setLayoutParams(lp);
         return ed;
+    }
+
+    private static Drawable inputBackground(Context c, boolean focused) {
+        DesignSpec sp = DesignSpec.of(c);
+        int fill = sp.material == DesignSpec.Material.TONAL ? sp.surfaceContainerHigh
+                : sp.material == DesignSpec.Material.LIQUID ? sp.sysFill3
+                : alpha(sp.text, 0x0F);
+        float radius = sp.material == DesignSpec.Material.TONAL ? 12f
+                : sp.material == DesignSpec.Material.LIQUID ? 14f : sp.cornerS;
+        int stroke = focused ? sp.accent : sp.material == DesignSpec.Material.TONAL
+                ? sp.outlineVariant : 0;
+        return squircle(c, fill, radius, stroke, focused ? 1.5f : 1f);
     }
 
     /**
@@ -1846,14 +2454,37 @@ final class ModouUi {
      * Material 蓝方块，与阅读页里的分段控件完全不是一套语言。
      */
     static LinearLayout switchRow(Context c, String label, boolean on, Consumer<Boolean> cb) {
+        return switchRowImpl(c, label, on, cb, null);
+    }
+
+    /** 阅读器使用同一套开关形状与动效，但颜色只跟随阅读纸张。 */
+    static LinearLayout readerSwitchRow(Context c, String label, boolean on,
+                                        Consumer<Boolean> cb, NativeTheme paper) {
+        return switchRowImpl(c, label, on, cb, paper);
+    }
+
+    private static LinearLayout switchRowImpl(Context c, String label, boolean on,
+                                              Consumer<Boolean> cb, NativeTheme paper) {
         ModouUi u = of(c);
+        DesignSpec sp = u.spec;
         final boolean[] st = {on};
-        LinearLayout row = new LinearLayout(c);
+        LinearLayout row = new LinearLayout(c) {
+            @Override public void onInitializeAccessibilityNodeInfo(
+                    android.view.accessibility.AccessibilityNodeInfo info) {
+                super.onInitializeAccessibilityNodeInfo(info);
+                info.setClassName(android.widget.Switch.class.getName());
+                info.setCheckable(true);
+                info.setChecked(st[0]);
+            }
+        };
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(c, 2), dp(c, 8), dp(c, 2), dp(c, 8));
+        row.setMinimumHeight(dp(c, 56));
+        row.setFocusable(true);
 
-        TextView t = tv(c, label, 14, u.text);
+        TextView t = tv(c, label, sp.material == DesignSpec.Material.GLASS
+                ? 14 : sp.bodySp - 2f, paper != null ? paper.text : u.text);
         t.setLayoutParams(new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         row.addView(t);
@@ -1862,50 +2493,62 @@ final class ModouUi {
         pill.setOrientation(LinearLayout.HORIZONTAL);
         pill.setGravity(Gravity.CENTER_VERTICAL);
         final View knob = new View(c);
-        GradientDrawable kb = new GradientDrawable();
-        kb.setShape(GradientDrawable.OVAL);
-        kb.setColor(0xFFFFFFFF);
-        knob.setBackground(kb);
-        // 三套开关各自的规格：墨读 44×26/球 20、M3 Switch 52×32/球 24、iOS 51×31/球 27
-        DesignSpec sp = u.spec;
         boolean tonal = sp.material == DesignSpec.Material.TONAL;
         boolean liquid = sp.material == DesignSpec.Material.LIQUID;
         final int trackW = dp(c, tonal ? 52 : liquid ? 51 : 44);
         final int trackH = dp(c, tonal ? 32 : liquid ? 31 : 26);
-        final int knobS = dp(c, tonal ? 24 : liquid ? 27 : 20);
-        final int inset = dp(c, tonal ? 4 : liquid ? 2 : 3);
-        LinearLayout.LayoutParams klp = new LinearLayout.LayoutParams(knobS, knobS);
-        klp.leftMargin = inset;
-        pill.addView(knob, klp);
-        knob.setElevation(dp(c, 1));
-        final int travel = trackW - knobS - inset * 2;
+        pill.addView(knob, new LinearLayout.LayoutParams(dp(c, 20), dp(c, 20)));
+        knob.setElevation(dp(c, liquid ? 2 : 1));
         final boolean[] first = {true};
         final Runnable render = () -> {
             GradientDrawable bg = new GradientDrawable();
             bg.setCornerRadius(trackH / 2f);
-            // 开：墨读用柔和灰蓝，M3 / iOS 用各自的标准主色；关：各自的轨道色
-            int onColor = sp.material == DesignSpec.Material.GLASS ? toneAccent(c) : u.accent;
-            int offColor = tonal ? u.spec.surfaceLow
-                    : liquid ? alpha(u.text, 0x1F) : alpha(u.text, 0x14);
+            int onColor = paper != null ? paper.acc
+                    : sp.material == DesignSpec.Material.GLASS ? toneAccent(c) : u.accent;
+            int offColor = paper != null ? alpha(paper.text, 0x24)
+                    : tonal ? sp.surfaceContainerHighest
+                    : liquid ? sp.sysFill3 : alpha(u.text, 0x14);
             bg.setColor(st[0] ? onColor : offColor);
+            if (tonal) bg.setStroke(dp(c, 2), st[0]
+                    ? (paper != null ? paper.acc : u.accent)
+                    : (paper != null ? alpha(paper.text, 0x55) : sp.outline));
             pill.setBackground(bg);
-            float to = st[0] ? travel : 0f;
-            if (first[0]) {
+
+            int knobDp = tonal ? (st[0] ? 24 : 16) : liquid ? 27 : 20;
+            int insetDp = tonal ? (st[0] ? 4 : 8) : liquid ? 2 : 3;
+            int knobS = dp(c, knobDp), inset = dp(c, insetDp);
+            LinearLayout.LayoutParams klp = (LinearLayout.LayoutParams) knob.getLayoutParams();
+            klp.width = knobS;
+            klp.height = knobS;
+            klp.leftMargin = inset;
+            knob.setLayoutParams(klp);
+            GradientDrawable kb = new GradientDrawable();
+            kb.setShape(GradientDrawable.OVAL);
+            kb.setColor(tonal ? (st[0]
+                    ? (paper != null ? paper.card : sp.onAccent)
+                    : (paper != null ? alpha(paper.text, 0x70) : sp.outline)) : 0xFFFFFFFF);
+            knob.setBackground(kb);
+            float to = st[0] ? trackW - knobS - inset * 2 : 0f;
+            long duration = ModouMotion.duration(c, sp.durShort);
+            if (first[0] || duration == 0) {
+                knob.animate().cancel();
                 knob.setTranslationX(to);
                 first[0] = false;
             } else {
-                knob.animate().translationX(to).setDuration(180)
-                        .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
+                knob.animate().translationX(to).setDuration(duration)
+                        .setInterpolator(ModouMotion.standard(c)).start();
             }
+            row.setSelected(st[0]);
+            row.setContentDescription(label + "，" + (st[0] ? "已开启" : "已关闭"));
+            row.setStateDescription(st[0] ? "已开启" : "已关闭");
         };
-        pill.setPadding(0, 0, 0, 0);
         pill.setLayoutParams(new LinearLayout.LayoutParams(trackW, trackH));
         render.run();
         row.addView(pill);
-        // 回调装进数组再挂 tag：列表行复用时要换成新书的源，不能直接烧死在闭包里
         final java.util.function.Consumer<Boolean>[] cbRef = new java.util.function.Consumer[]{cb};
         row.setOnClickListener(v -> {
             st[0] = !st[0];
+            ModouMotion.tick(row);
             render.run();
             if (cbRef[0] != null) cbRef[0].accept(st[0]);
         });
@@ -2077,7 +2720,11 @@ final class ModouUi {
                 ViewGroup.LayoutParams.WRAP_CONTENT, h));
         t.setClickable(true);
         t.setFocusable(true);
+        t.setContentDescription(label);
         t.setOnClickListener(l);
+        ModouMotion.press(t);
+        // 0.9.201：视觉高度保持 40/50dp，触控区统一补到 48dp（不改 token 定稿值）。
+        expandTouch(t, 48);
         return t;
     }
 
@@ -2176,9 +2823,25 @@ final class ModouUi {
         public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
     }
 
+    /** 返回 true 才关闭弹层；表单校验和同步保存失败时可保留全部输入。 */
+    interface SheetGuard {
+        boolean confirm();
+    }
+
     /** 弹层按钮行：墨读填充并排 / M3 右下文字按钮 / iOS 分隔线横排 */
     static LinearLayout sheetButtons(Activity a, Dialog owner, String cancel, String ok,
                                      Runnable onCancel, Runnable onOk) {
+        return sheetButtonsImpl(a, owner, cancel, ok, onCancel, onOk, null);
+    }
+
+    static LinearLayout sheetButtonsGuarded(Activity a, Dialog owner, String cancel, String ok,
+                                            Runnable onCancel, SheetGuard onOk) {
+        return sheetButtonsImpl(a, owner, cancel, ok, onCancel, null, onOk);
+    }
+
+    private static LinearLayout sheetButtonsImpl(Activity a, Dialog owner, String cancel, String ok,
+                                                 Runnable onCancel, Runnable onOk,
+                                                 SheetGuard guard) {
         ModouUi u = of(a);
         DesignSpec sp = u.spec;
         LinearLayout row = new LinearLayout(a);
@@ -2267,6 +2930,10 @@ final class ModouUi {
             if (onCancel != null) onCancel.run();
         });
         k.setOnClickListener(v -> {
+            if (guard != null) {
+                if (guard.confirm() && owner != null) owner.dismiss();
+                return;
+            }
             if (owner != null) owner.dismiss();
             if (onOk != null) onOk.run();
         });

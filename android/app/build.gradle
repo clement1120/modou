@@ -24,8 +24,11 @@ android {
         // 与 RuntimeShader(AGSL) 都要求 31/33，低版本只能靠截屏硬凑，已整套删除。
         minSdk 31
         targetSdk 34
-        versionCode 396
-        versionName "0.9.171"
+        // 0.9.207：极简·纪视觉精修与去控件化 —— 阅读页顶部去圆底、底部工具栏单行
+        // 透明极简排版 + 2dp 细线进度条、排版面板纯实色底 + 全文字胶囊（零滑杆零 Switch）、
+        // 列表行去图标块/描边/阴影/分隔线、书架未读文案 11sp 深灰。仅 MONOLITH 生效。
+        versionCode 432
+        versionName "0.9.207"
         // 分页算法版本（构建期注入 NativePageView.java 的内容哈希）：算法改动自动让旧页表失效
         buildConfigField "String", "PAGINATE_VER", "\"$paginateHash\""
     }

@@ -225,11 +225,17 @@ final class RulesPanel {
             top.addView(tag);
         } else {
             TextView del = ModouUi.tv(host, "删除", 12.5f, ui.danger);
-            del.setPadding(ModouUi.dp(host, 9), ModouUi.dp(host, 4), 0, ModouUi.dp(host, 4));
-            del.setOnClickListener((v) -> {
-                rules.remove(i);
-                save();
-            });
+            del.setGravity(Gravity.CENTER);
+            del.setMinWidth(ModouUi.dp(host, 48));
+            del.setMinimumHeight(ModouUi.dp(host, 48));
+            del.setContentDescription("删除规则：" + r.pattern);
+            del.setOnClickListener((v) -> ModouUi.confirm(host, "删除规则",
+                    "将删除规则「" + r.pattern + "」，此操作无法撤销。", () -> {
+                        if (i >= 0 && i < rules.size() && rules.get(i) == r) {
+                            rules.remove(i);
+                            save();
+                        }
+                    }));
             top.addView(del);
             top.setOnClickListener((v) -> edit(i, null));
         }
@@ -274,23 +280,51 @@ final class RulesPanel {
         LinearLayout box = new LinearLayout(host);
         box.setOrientation(LinearLayout.VERTICAL);
         box.addView(ed);
-        final Dialog d = ModouUi.sheet(host, "导入规则", box);
-        box.addView(ModouUi.sheetButtons(host, d, "取消", "导入并覆盖", null, () -> {
-            List<Rules.Rule> rs = Rules.parse(String.valueOf(ed.getText()));
-            if (rs.isEmpty()) {
-                ModouUi.toast(host, "没解析到规则");
-                return;
+        LinearLayout footer = new LinearLayout(host);
+        footer.setOrientation(LinearLayout.VERTICAL);
+        final Dialog d = ModouUi.sheetForm(host, "导入规则", box, footer);
+        footer.addView(ModouUi.sheetButtonsGuarded(host, d, "取消", "导入并覆盖", null, () -> {
+            String raw = String.valueOf(ed.getText()).trim();
+            try {
+                JSONArray array = new JSONArray(raw);
+                if (array.length() == 0) {
+                    ed.setError("规则数组不能为空");
+                    ed.requestFocus();
+                    return false;
+                }
+                List<Rules.Rule> rs = Rules.parse(raw);
+                if (rs.isEmpty()) {
+                    ed.setError("没有可导入的有效规则");
+                    ed.requestFocus();
+                    return false;
+                }
+                // 校验与解析全部成功后才替换现有清单，失败时原规则和草稿都保留。
+                rules.clear();
+                rules.addAll(rs);
+                save();
+                ModouUi.toast(host, "已导入 " + rs.size() + " 条");
+                return true;
+            } catch (Exception e) {
+                ed.setError("JSON 格式不正确，请检查后重试");
+                ed.requestFocus();
+                return false;
             }
-            rules.clear();
-            rules.addAll(rs);
-            save();
-            ModouUi.toast(host, "已导入 " + rs.size() + " 条");
         }));
     }
 
     void edit(final int idx, final String prefill) {
         final boolean isNew = idx < 0 || idx >= rules.size();
-        final Rules.Rule r = isNew ? new Rules.Rule() : rules.get(idx);
+        final Rules.Rule original = isNew ? null : rules.get(idx);
+        // 弹窗只编辑草稿；校验和落盘全部成功后再替换列表中的原对象。
+        final Rules.Rule r = new Rules.Rule();
+        if (original != null) {
+            r.id = original.id;
+            r.pattern = original.pattern;
+            r.replacement = original.replacement;
+            r.isRegex = original.isRegex;
+            r.scope = original.scope;
+            r.enabled = original.enabled;
+        }
 
         int p = ModouUi.dp(host, 14);
         LinearLayout box = new LinearLayout(host);
@@ -308,34 +342,45 @@ final class RulesPanel {
         box.addView(ModouUi.switchRow(host, "按正则表达式匹配", r.isRegex, v -> isRegex[0] = v));
         box.addView(ModouUi.switchRow(host, "只作用于章节标题", isTitle[0], v -> isTitle[0] = v));
 
-        if (isNew) {
-            r.id = "r" + System.currentTimeMillis();
-            r.enabled = true;
-            rules.add(r);
-        }
-
+        LinearLayout footer = new LinearLayout(host);
+        footer.setOrientation(LinearLayout.VERTICAL);
         final Dialog d = ModouUi.sheetForm(host,
-                isNew ? "添加规则" : "修改规则", box);
+                isNew ? "添加规则" : "修改规则", box, footer);
 
-        box.addView(ModouUi.sheetButtons(host, d, "取消", "保存",
-                () -> { // 取消：新增的那条要撤掉，编辑中的不动
-                    if (isNew && !rules.isEmpty()) rules.remove(rules.size() - 1);
-                },
-                () -> {
-                    // 新增时先加进列表再改字段，保存失败也不会留下半条规则
-                    int at = isNew ? rules.size() - 1 : idx;
-                    Rules.Rule t = rules.get(at);
-                    t.pattern = String.valueOf(ePat.getText());
-                    t.replacement = String.valueOf(eRep.getText());
-                    t.isRegex = isRegex[0];
-                    t.scope = isTitle[0] ? "title" : "content";
-                    if (t.pattern.trim().isEmpty()) {
-                        if (isNew) rules.remove(at);
-                        ModouUi.toast(host, "查找内容不能为空");
-                        return;
-                    }
-                    save();
-                }));
+        footer.addView(ModouUi.sheetButtonsGuarded(host, d, "取消", "保存", null, () -> {
+            String pattern = String.valueOf(ePat.getText());
+            if (pattern.trim().isEmpty()) {
+                ePat.setError("查找内容不能为空");
+                ePat.requestFocus();
+                return false;
+            }
+            if (isRegex[0]) {
+                try {
+                    java.util.regex.Pattern.compile(pattern);
+                } catch (Exception e) {
+                    ePat.setError("正则表达式格式不正确");
+                    ePat.requestFocus();
+                    return false;
+                }
+            }
+            r.pattern = pattern;
+            r.replacement = String.valueOf(eRep.getText());
+            r.isRegex = isRegex[0];
+            r.scope = isTitle[0] ? "title" : "content";
+            if (isNew) {
+                r.id = "r" + System.currentTimeMillis();
+                r.enabled = true;
+                rules.add(r);
+            } else {
+                if (idx < 0 || idx >= rules.size() || rules.get(idx) != original) {
+                    ModouUi.toast(host, "规则已变化，请重新打开编辑");
+                    return false;
+                }
+                rules.set(idx, r);
+            }
+            save();
+            return true;
+        }));
 
         if (prefill != null) {
             // 从选词进来的：光标直接给「替换为」，留空即删除，选完就能落规则

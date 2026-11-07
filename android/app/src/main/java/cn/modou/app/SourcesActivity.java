@@ -10,7 +10,14 @@ import android.os.Bundle;
 public class SourcesActivity extends Activity {
 
     static void launch(Activity from) {
-        from.startActivity(new Intent(from, SourcesActivity.class));
+        ModouTransition.push(from, new Intent(from, SourcesActivity.class));
+    }
+
+    /** 统一返回转场：三套语言各自的 pop 动作（见 {@link ModouTransition}） */
+    @Override
+    public void finish() {
+        super.finish();
+        ModouTransition.back(this);
     }
 
     @Override

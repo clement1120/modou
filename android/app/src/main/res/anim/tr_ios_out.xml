@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- iOS 27 · push 的视差：旧页面左移 28% 并轻微压暗（不是整幅滑走） -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:interpolator/fast_out_slow_in"
+    android:shareInterpolator="true">
+    <translate
+        android:duration="340"
+        android:fromXDelta="0"
+        android:toXDelta="-28%p" />
+    <alpha
+        android:duration="340"
+        android:fromAlpha="1"
+        android:toAlpha="0.88" />
+</set>

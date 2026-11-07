@@ -4,6 +4,7 @@ import android.content.Context;
 import android.view.VelocityTracker;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewConfiguration;
 import android.widget.OverScroller;
 
 /**
@@ -73,7 +74,10 @@ final class HomePager extends ViewGroup {
     /** 判定拦截后记录的横向起点 */
     private float dragFrom;
     private boolean dragging = false;
-    private static final int TOUCH_SLOP = 36; // px：比系统默认更保守——宁可少翻页，不能吞点击
+    private int touchSlop() {
+        // 用系统标准触摸阈值（已含设备密度与厂商调校），下限 24px 保留原「宁少翻不吞点击」的保守倾向
+        return Math.max(ViewConfiguration.get(getContext()).getScaledTouchSlop(), 24);
+    }
 
     HomePager(Context c) {
         super(c);
@@ -171,7 +175,7 @@ final class HomePager extends ViewGroup {
                 if (!dragging) {
                     float dx = ev.getX() - downX;
                     float dy = ev.getY() - downY;
-                    if (Math.abs(dx) > TOUCH_SLOP && Math.abs(dx) > Math.abs(dy) * 1.5f) {
+                    if (Math.abs(dx) > touchSlop() && Math.abs(dx) > Math.abs(dy) * 1.5f) {
                         dragging = true;
                         if (velocity == null) velocity = VelocityTracker.obtain();
                         velocity.clear();
@@ -199,7 +203,7 @@ final class HomePager extends ViewGroup {
                 if (!dragging) {
                     float dx0 = ev.getX() - downX;
                     float dy0 = ev.getY() - downY;
-                    if (Math.abs(dx0) > TOUCH_SLOP && Math.abs(dx0) > Math.abs(dy0) * 1.5f) {
+                    if (Math.abs(dx0) > touchSlop() && Math.abs(dx0) > Math.abs(dy0) * 1.5f) {
                         dragging = true;
                     } else {
                         return false;
@@ -210,7 +214,20 @@ final class HomePager extends ViewGroup {
                 int x = Math.max(0, Math.min(max, (int) dx));
                 scrollTo(x, 0);
                 return true;
-            case android.view.MotionEvent.ACTION_CANCEL:
+            case android.view.MotionEvent.ACTION_CANCEL: {
+                // 手势被系统/父布局取消（如父容器拦截、窗口失焦）：放弃本次翻页，弹回当前页，绝不提交 onPage
+                if (!dragging) return false;
+                dragging = false;
+                if (velocity != null) {
+                    velocity.recycle();
+                    velocity = null;
+                }
+                int w = Math.max(1, getWidth());
+                int to = cur * w;
+                scroller.startScroll(getScrollX(), 0, to - getScrollX(), 0, 200);
+                invalidate();
+                return true;
+            }
             case android.view.MotionEvent.ACTION_UP: {
                 if (!dragging) return false;
                 dragging = false;

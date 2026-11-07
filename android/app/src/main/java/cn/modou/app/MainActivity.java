@@ -263,10 +263,10 @@ public class MainActivity extends Activity {
                 long now = System.currentTimeMillis();
                 if (now - lastRendererGoneAt > 60000) {
                     lastRendererGoneAt = now;
-                    android.widget.Toast.makeText(MainActivity.this, "页面已重新加载", android.widget.Toast.LENGTH_SHORT).show();
+                    ModouUi.toast(MainActivity.this, "页面已重新加载");
                     recreate();
                 } else {
-                    android.widget.Toast.makeText(MainActivity.this, "内存不足，请重新打开应用", android.widget.Toast.LENGTH_LONG).show();
+                    ModouUi.toast(MainActivity.this, "内存不足，请重新打开应用");
                     finish();
                 }
                 return true; // 已处理，别让系统把整个 App 一起杀掉
@@ -759,7 +759,7 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 Log.w(TAG, "startSave failed", e);
                 pendingSaveBytes = null;
-                android.widget.Toast.makeText(this, "无法打开保存对话框", android.widget.Toast.LENGTH_SHORT).show();
+                ModouUi.toast(this, "无法打开保存对话框");
             }
         });
     }
@@ -773,11 +773,11 @@ public class MainActivity extends Activity {
             if (os != null) {
                 os.write(bytes);
                 os.flush();
-                android.widget.Toast.makeText(this, "已保存", android.widget.Toast.LENGTH_SHORT).show();
+                ModouUi.toast(this, "已保存");
             }
         } catch (Exception e) {
             Log.w(TAG, "save file failed", e);
-            android.widget.Toast.makeText(this, "保存失败", android.widget.Toast.LENGTH_SHORT).show();
+            ModouUi.toast(this, "保存失败");
         }
     }
 
@@ -910,7 +910,7 @@ public class MainActivity extends Activity {
                 return;
             }
             lastTagBackAt = now;
-            android.widget.Toast.makeText(this, "再按一次返回退出", android.widget.Toast.LENGTH_SHORT).show();
+            ModouUi.centerToast(this, "再按一次返回退出");
             return;
         }
         if (webView.canGoBack()) webView.goBack();

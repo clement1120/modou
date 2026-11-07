@@ -62,7 +62,6 @@ import android.widget.ListView;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
-import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -172,6 +171,23 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
     private boolean sheetDodging;
 
     private NativeTheme theme = NativeTheme.of("paper");
+    /** 0.9.173：设计语言规格（阅读页只读它决定控件形状 / 材质厚度 / 字号，颜色仍走纸张色板） */
+    private DesignSpec rd;
+
+    private DesignSpec rd() {
+        if (rd == null) rd = DesignSpec.of(this);
+        return rd;
+    }
+
+    /** 极简·纪：本轮去控件化只在第三套生效，墨读 / M3 逐像素不变 */
+    private boolean mono() {
+        return rd().lang == DesignSpec.Lang.MONOLITH;
+    }
+
+    /** 极简·纪图标纯色：浅色纯黑、深色纯白，不掺纸张灰 */
+    private int monoInk() {
+        return theme.dark ? 0xFFFFFFFF : 0xFF000000;
+    }
 
     private String bookId = "";
     private String bookTitle = "";
@@ -276,13 +292,13 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
      * 保留引用、直接 setProgress 才是无副作用的路子。
      */
     private static final class SeekBind {
-        SeekBar sb;
+        ModouPillSeekBar sb;
         TextView label;
         int min, max, step;
         Fmt fmt;
         java.util.function.IntSupplier cur;
 
-        SeekBind(SeekBar sb, TextView label, int min, int max, int step, Fmt fmt,
+        SeekBind(ModouPillSeekBar sb, TextView label, int min, int max, int step, Fmt fmt,
                  java.util.function.IntSupplier cur) {
             this.sb = sb;
             this.label = label;
@@ -481,7 +497,7 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         sBridge = bridge;
         Intent i = new Intent(from, NativeReaderActivity.class);
         i.putExtra("payload", payload);
-        from.startActivity(i);
+        ModouTransition.push(from, i);
     }
 
     /** 网页侧回传章节数据（由 ModouBridge 转调） */
@@ -501,6 +517,13 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
     }
 
     /* ---------------- 生命周期 ---------------- */
+
+    /** 统一返回转场：三套语言各自的 pop 动作（见 {@link ModouTransition}） */
+    @Override
+    public void finish() {
+        super.finish();
+        ModouTransition.back(this);
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -860,9 +883,16 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         ImageView back = new ImageView(this);
         headBack = back;
         back.setScaleType(ImageView.ScaleType.CENTER);
-        back.setImageDrawable(new ModouGlyph(ModouGlyph.BACK, theme.text,
-                dp(18), ModouUi.dp(this, 1.8f)));
-        back.setBackground(circleBtnBg());
+        if (mono()) {
+            // 极简·纪：无圆底，1.5dp 纯黑/纯白细线图标直接悬浮
+            back.setImageDrawable(new ModouGlyph(ModouGlyph.BACK, monoInk(),
+                    dp(20), ModouUi.dp(this, 1.5f)));
+            back.setBackground(null);
+        } else {
+            back.setImageDrawable(new ModouGlyph(ModouGlyph.BACK, theme.text,
+                    dp(18), ModouUi.dp(this, 1.8f)));
+            back.setBackground(circleBtnBg());
+        }
         // 直接退出阅读页。以前走 onBackPressed()，而工具坞此时是开着的，
         // 它只会「收起工具坞」并 return —— 点了像没反应。现在无论如何都回书架。
         back.setOnClickListener(v -> quitReader());
@@ -893,8 +923,8 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         // 右上：换源圆钮（与返回钮同款 40dp 正圆）。阅读页原地弹换源面板，不用跳书籍详情页
         ImageView swap = new ImageView(this);
         swap.setScaleType(ImageView.ScaleType.CENTER);
-        swap.setImageDrawable(tinted(R.drawable.ic_book_swap, theme.text));
-        swap.setBackground(circleBtnBg());
+        swap.setImageDrawable(tinted(R.drawable.ic_book_swap, mono() ? monoInk() : theme.text));
+        if (!mono()) swap.setBackground(circleBtnBg());
         swap.setOnClickListener(v -> SourceSwap.show(NativeReaderActivity.this));
         swap.setContentDescription("换源");
         head.addView(swap, new LinearLayout.LayoutParams(dp(40), dp(40)));
@@ -1237,9 +1267,15 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         if (head != null) {
             head.setBackgroundColor(theme.bg);
             if (headBack != null) {
-                headBack.setImageDrawable(new ModouGlyph(ModouGlyph.BACK, theme.text,
-                        dp(17), ModouUi.dp(this, 1.7f)));
-                headBack.setBackground(circleBtnBg());
+                if (mono()) {
+                    headBack.setImageDrawable(new ModouGlyph(ModouGlyph.BACK, monoInk(),
+                            dp(20), ModouUi.dp(this, 1.5f)));
+                    headBack.setBackground(null);
+                } else {
+                    headBack.setImageDrawable(new ModouGlyph(ModouGlyph.BACK, theme.text,
+                            dp(17), ModouUi.dp(this, 1.7f)));
+                    headBack.setBackground(circleBtnBg());
+                }
             }
             if (header != null) header.setTextColor(theme.text);
             if (headerSub != null) headerSub.setTextColor(theme.sub);
@@ -1366,7 +1402,7 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
                     // 本地导入的书没有书源，"取不到"就是文件里真的没有正文 ——
                     // 说清楚比让人盯着「加载中」转圈强
                     if (bookId != null && bookId.startsWith(LocalImport.LOCAL)) {
-                        toast("这本书的正文没跟着恢复：请到书架重新导入一次原文件，文件还在原来的位置");
+                        toast("这本书的正文还没恢复：到「本地书籍」页点「一键补齐」，正文会重新解析，阅读进度不变");
                         if (pageView != null) pageView.cancelCrossChapter();
                         return;
                     }
@@ -1764,14 +1800,7 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
 
     @Override
     public void centerToast(String s) {
-        try {
-            android.widget.Toast t = android.widget.Toast.makeText(this, s,
-                    android.widget.Toast.LENGTH_SHORT);
-            t.setGravity(android.view.Gravity.CENTER, 0, 0);
-            t.show();
-        } catch (Throwable e) {
-            toast(s);
-        }
+        ModouUi.centerToast(this, s);
     }
 
     /** 目录里这一章的名字（顶部要显示，也用于去掉正文里重复的那个章名） */
@@ -2069,9 +2098,14 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
 
-        ttsInfo = ModouUi.tv(this, "准备朗读…", 13.5f, theme.text);
+        DesignSpec tsp = rd();
+        ttsInfo = ModouUi.tv(this, "准备朗读…", tsp.rdTtsTitleSp, theme.text);
         ttsInfo.setGravity(Gravity.CENTER_VERTICAL);
-        ttsInfo.setTypeface(ttsInfo.getTypeface(), Typeface.BOLD);
+        if (tsp.rdTtsTitleWeight == 2) {
+            ttsInfo.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        } else {
+            ttsInfo.setTypeface(ttsInfo.getTypeface(), Typeface.BOLD);
+        }
         // 行高与按钮同高（44）：两者都是「满行高 + 内部居中」，
         // 文字基线和 X 的圆心必然在同一条水平线上
         top.addView(ttsInfo, new LinearLayout.LayoutParams(0, dp(44), 1f));
@@ -2188,7 +2222,8 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         col.setOrientation(LinearLayout.VERTICAL);
         col.setGravity(align);
 
-        int size = primary ? dp(40) : dp(34);
+        DesignSpec csp = rd();
+        int size = primary ? dp(csp.rdTtsPlayDp) : dp(34);
         TextView ic = new TextView(this);
         ic.setGravity(Gravity.CENTER);
         ic.setIncludeFontPadding(false);
@@ -2202,10 +2237,18 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
                         ModouUi.alpha(theme.text, primary ? 0x18 : 0x10)),
                 null, mask));
         ic.setCompoundDrawablesWithIntrinsicBounds(null,
-                new GlyphIcon(kind, primary ? theme.acc : theme.text, dp(primary ? 22 : 17)),
+                new GlyphIcon(kind, primary ? theme.acc : theme.text,
+                        dp(primary ? (csp.rdTtsPlayDp >= 48 ? 24 : 22) : 17)),
                 null, null);
+        if (primary && csp.rdTtsPlayFill) {
+            // M3：中央播放键是一枚 tonal 圆底（primaryContainer 语汇的纸张色近似）
+            GradientDrawable pg = new GradientDrawable();
+            pg.setShape(GradientDrawable.OVAL);
+            pg.setColor(ModouUi.alpha(theme.acc, 0x1F));
+            ic.setBackground(pg);
+        }
 
-        TextView t = ModouUi.tv(this, label, 11f, primary ? theme.acc : theme.sub);
+        TextView t = ModouUi.tv(this, label, csp.rdTtsLabelSp, primary ? theme.acc : theme.sub);
         t.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -2388,7 +2431,8 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         GradientDrawable g = new GradientDrawable();
         g.setColor(theme.dark ? 0x99202224 : 0xA6FFFFFF);
         g.setCornerRadius(dp(22));
-        g.setStroke(Math.max(1, dp(1)), theme.dark ? 0x33FFFFFF : 0x33FFFFFF);
+        // 0.9.201：浅色纸底下 20% 白描边几乎不可见，改 10% 墨，与全文件其余描边一致。
+        g.setStroke(Math.max(1, dp(1)), theme.dark ? 0x33FFFFFF : 0x1A000000);
         pill.setBackground(g);
         pill.setElevation(dp(10));
         pill.setOutlineProvider(new android.view.ViewOutlineProvider() {
@@ -3383,11 +3427,30 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         // 透上来，工具坞本身是磨砂玻璃而非死实卡 —— 之前 95% 实底把模糊盖死，看着就是一块白板，
         // 和背后的模糊成了两团东西。圆角 / 边缘泛光 / 顶边切方（joinTop，与朗读浮条无缝拼接）
         // 仍由 dockBg（ModouGlassDrawable）承担，复用同一套磨砂材质。
-        dockBg = new ModouGlassDrawable(ModouUi.alpha(theme.card, 0x47), dp(22), false);
-        dockBg.setRimWidth(Math.max(1, dp(1)));
-        dockBg.setVeil(theme.dark ? 0x0D000000 : 0x0DFFFFFF);
-        dockPanel.setBackground(dockBg);
-        dockPanel.setPadding(dp(8), dp(6), dp(8), dp(6));
+        // 0.9.173（Stage 5 第一刀）：形状 / 材质厚度 / 内边距按设计语言。
+        // 颜色仍取纸张色板 —— 阅读纸张与设计语言正交（§2.10），把 accent 换成系统色
+        // 会让「牛皮纸 + 紫色指示器」这种组合出现；控件只改结构，不改色相。
+        DesignSpec rsp = rd();
+        if (mono()) {
+            // 极简·纪：不要整块圆角灰底，只垫一层由下往上的极弱纸色渐变遮住底部文字
+            GradientDrawable veil = new GradientDrawable(
+                    GradientDrawable.Orientation.BOTTOM_TOP,
+                    new int[]{ModouUi.alpha(theme.bg, 0xE6),
+                            ModouUi.alpha(theme.bg, 0x00)});
+            dockPanel.setBackground(veil);
+            dockPanel.setPadding(dp(16), dp(8), dp(16), dp(12));
+            dockBg = null;
+        } else {
+            int baseAlpha = rsp.rdDockStyle == 2 ? 0xF2 : 0x47;
+            dockBg = new ModouGlassDrawable(ModouUi.alpha(theme.card, baseAlpha),
+                    ModouUi.dp(this, rsp.rdDockCornerDp), rsp.rdDockTopOnly);
+            dockBg.setRimWidth(Math.max(1, dp(rsp.rdDockStyle == 2 ? 0 : 1)));
+            dockBg.setVeil(rsp.rdDockStyle == 2 ? 0
+                    : (theme.dark ? 0x0D000000 : 0x0DFFFFFF));
+            dockPanel.setBackground(dockBg);
+            dockPanel.setPadding(dp(rsp.rdDockPadH), dp(rsp.rdDockPadV),
+                    dp(rsp.rdDockPadH), dp(rsp.rdDockPadV));
+        }
         dockPanel.setClickable(true); // 吸收触摸，避免穿透到正文翻页
 
         // 自动阅读状态条（运行时出现）
@@ -3401,10 +3464,10 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         meta.setGravity(Gravity.CENTER_VERTICAL);
         meta.setPadding(dp(6), dp(4), dp(6), dp(7));
         dockMetaL = new TextView(this);
-        dockMetaL.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        dockMetaL.setTextSize(TypedValue.COMPLEX_UNIT_SP, rsp.rdDockMetaSp);
         dockMetaL.setTextColor(theme.sub);
         dockMetaR = new TextView(this);
-        dockMetaR.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        dockMetaR.setTextSize(TypedValue.COMPLEX_UNIT_SP, rsp.rdDockMetaSp);
         dockMetaR.setTextColor(theme.sub);
         dockMetaR.setGravity(Gravity.END);
         meta.addView(dockMetaL, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -3419,8 +3482,10 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         seekRow.setOrientation(LinearLayout.HORIZONTAL);
         seekRow.setGravity(Gravity.CENTER_VERTICAL);
 
-        dockPrev = seekNav(R.drawable.ic_rd_prev);
-        seekRow.addView(dockPrev);
+        if (!mono()) {
+            dockPrev = seekNav(R.drawable.ic_rd_prev);
+            seekRow.addView(dockPrev);
+        }
 
         // 轨道视觉 4dp、触摸 30dp。上下各留 10dp 到相邻元素，
         // 免得手指想点箭头时先被进度条吃掉事件、页码乱跳。
@@ -3428,8 +3493,10 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         seekRow.addView(dockSeek, new LinearLayout.LayoutParams(
                 0, dp(34), 1f));
 
-        dockNext = seekNav(R.drawable.ic_rd_next);
-        seekRow.addView(dockNext);
+        if (!mono()) {
+            dockNext = seekNav(R.drawable.ic_rd_next);
+            seekRow.addView(dockNext);
+        }
 
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -3572,6 +3639,18 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
     /** 按当前排布重建两行图标（隐藏项不画；整行空了连分隔线一起藏） */
     private void paintDockRows() {
         if (dockRow1 == null) return;
+        if (mono()) {
+            // 极简·纪：九个图标全部补齐、单行等分，忽略用户隐藏项与两行排布
+            dockRow1.removeAllViews();
+            for (String k : MENU_KEYS) dockRow1.addView(dockButton(k));
+            dockRow2.removeAllViews();
+            dockRow2.setVisibility(View.GONE);
+            if (dockDivider != null) dockDivider.setVisibility(View.GONE);
+            dockRow1.setVisibility(View.VISIBLE);
+            if (dockAuto != null) dockAuto.setVisibility(autoOn ? View.VISIBLE : View.GONE);
+            if (autoOn && dockAutoSpeed != null) dockAutoSpeed.setText((autoInterval / 1000) + "s");
+            return;
+        }
         dockRow1.removeAllViews();
         for (String k : menuR1) dockRow1.addView(dockButton(k));
         dockRow2.removeAllViews();
@@ -4004,29 +4083,50 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
      * on=true 用强调色 + 淡底（对应网页版 .rd-act.on）；disabled 时降到 0.3 透明。
      */
     private View dockAct(int iconRes, String label, boolean on, boolean disabled, Runnable r) {
+        if (mono()) return dockIconOnly(iconRes, on, disabled, r);
+        DesignSpec rsp = rd();
         LinearLayout b = new LinearLayout(this);
         b.setOrientation(LinearLayout.VERTICAL);
         b.setGravity(Gravity.CENTER);
-        b.setPadding(dp(2), dp(6), dp(2), dp(6));
+        b.setPadding(dp(2), dp(rsp.rdDockItemPadV), dp(2), dp(rsp.rdDockItemPadV));
         b.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         ImageView iv = new ImageView(this);
-        int s = dp(20);
-        iv.setLayoutParams(new LinearLayout.LayoutParams(s, s));
+        int s = dp(rsp.rdDockIconDp);
         iv.setImageDrawable(tinted(iconRes, on ? theme.acc : theme.sub));
-        b.addView(iv);
+        if (on && rsp.rdDockIndicator) {
+            // M3 NavigationBar 的 active indicator：图标后面一枚 32×20 的 tonal 药丸，
+            // 圆角 = 药丸高度的一半，颜色取纸张强调色的 1F 透明（不引入系统紫）。
+            FrameLayout pill = new FrameLayout(this);
+            int pw = dp(rsp.rdDockIconDp + 16);
+            int phh = dp(rsp.rdDockIconDp + 8);
+            GradientDrawable pg = new GradientDrawable();
+            pg.setColor(ModouUi.alpha(theme.acc, 0x1F));
+            pg.setCornerRadius(phh / 2f);
+            pill.setBackground(pg);
+            pill.addView(iv, new FrameLayout.LayoutParams(s, s, Gravity.CENTER));
+            b.addView(pill, new LinearLayout.LayoutParams(pw, phh));
+        } else {
+            iv.setLayoutParams(new LinearLayout.LayoutParams(s, s));
+            b.addView(iv);
+        }
 
         TextView t = new TextView(this);
         t.setText(label);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, rsp.rdDockLabelSp);
+        if (rsp.rdDockLabelWeight == 2) {
+            t.setTypeface(android.graphics.Typeface.create("sans-serif-medium",
+                    android.graphics.Typeface.NORMAL));
+        }
         t.setTextColor(on ? theme.acc : theme.sub);
         t.setGravity(Gravity.CENTER);
         t.setPadding(0, dp(4), 0, 0);
         b.addView(t);
 
-        if (on) {
-            // 约 .10 的淡底
-            b.setBackground(ModouUi.squircle(this, ModouUi.alpha(theme.acc, 0x1A), 14));
+        if (on && !rsp.rdDockIndicator) {
+            // 约 .10 的淡底（墨读 14dp / iOS 10dp 圆角）
+            b.setBackground(ModouUi.squircle(this, ModouUi.alpha(theme.acc, 0x1A),
+                    rsp.rdDockItemCornerDp));
         }
         if (disabled) b.setAlpha(0.3f);
         else b.setOnClickListener(v -> {
@@ -4041,6 +4141,7 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
 
     /** 「Aa」排版按钮：用文字而不是图标，和网页版一致（20dp 盒子、衬线加粗） */
     private View dockAa(String label, Runnable r) {
+        if (mono()) return dockAaIcon(r);
         LinearLayout b = new LinearLayout(this);
         b.setOrientation(LinearLayout.VERTICAL);
         b.setGravity(Gravity.CENTER);
@@ -4075,16 +4176,23 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         sb.setPadding(dp(7), 0, dp(7), 0);
         // 轨道 8dp、球半径 8dp：球直径是轨道高的两倍，红条 4dp 的圆头必然被球整个盖住，
         // 交界处不会露出「圆柱截面」。进度段终点就取球心，两者始终同一点。
-        sb.setTrackHeightDp(8);
-        sb.setBallRadiusDp(8);
-        sb.setPalette(
-                theme.dark ? 0x2BFFFFFF : 0x1F000000,
-                ModouUi.mix(theme.acc, 0xFFFFFFFF, 0.16f),
-                theme.dark ? 0x26FFFFFF : 0x40FFFFFF,
-                theme.acc,
-                theme.dark ? 0xFFF0EDE4 : 0xFFFFFFFF,
-                theme.dark ? 0xFFF7F5EF : 0xFFFFFFFF,
-                theme.dark ? 0x33FFFFFF : 0x14000000);
+        // 轨道高 / 滑块半径由 ModouPillSeekBar 按设计语言自取（0.9.173）
+        if (mono()) {
+            // 极简·纪：2dp 细线、深灰底轨、极小白色圆点滑块
+            sb.setTrackHeightDp(2f);
+            sb.setBallRadiusDp(3f);
+            sb.setPalette(0xFF3A4050, theme.acc, 0x00000000,
+                    0x00000000, 0x00000000, 0xFFFFFFFF, 0x00000000);
+        } else {
+            sb.setPalette(
+                    theme.dark ? 0x2BFFFFFF : 0x1F000000,
+                    ModouUi.mix(theme.acc, 0xFFFFFFFF, 0.16f),
+                    theme.dark ? 0x26FFFFFF : 0x40FFFFFF,
+                    theme.acc,
+                    theme.dark ? 0xFFF0EDE4 : 0xFFFFFFFF,
+                    theme.dark ? 0xFFF7F5EF : 0xFFFFFFFF,
+                    theme.dark ? 0x33FFFFFF : 0x14000000);
+        }
         sb.setTicks(dockTicks);
         sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
@@ -4421,81 +4529,18 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
 
     /* ---------------- 底部抽屉（更多 / 排版） ---------------- */
 
-    /** 通用底部抽屉：遮罩 + 圆角面板 + 标题行；点遮罩或 ✕ 关闭 */
+    /** 阅读弹层适配层：公共结构负责三语言外观，本类继续负责动画、避让与实例状态。 */
     private void showSheet(String title, View content) {
-        // 0.9.156：这是「替换面板」，不是「关闭面板」。旧实现调 closeSheet() 会启动
-        // 120~200ms 淡出动画，新窗口却立刻 show —— 两扇带 dim/模糊的窗口短暂重叠，
-        // 视觉上闪一下双重暗化/重影。改用即时关闭，退出动画只留给主动关闭。
+        // 替换面板时立即撤掉旧窗口，避免两扇带 dim/模糊的窗口短暂重叠。
         dismissSheetImmediate();
         sheetTitle = title == null ? "" : title;
-        FrameLayout wrap = new FrameLayout(this);
-        // 0.9.154：窗口精确等于卡片，wrap 里只放面板本身 —— 不再自己画一层全屏 scrim。
-        // 那层 scrim 铺满整屏又压在系统模糊之上，正是「菜单和模糊两团东西」的来源。
-        // 暗化改由窗口 FLAG_DIM_BEHIND 承担，点外关闭改由 setCanceledOnTouchOutside 承担。
-        wrap.setPadding(0, 0, 0, dp(12));   // 底部离屏 12dp，与旧版浮岛一致
-
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        // 面板只留 6% 薄纱 + 极细边光，与书架 ModouUi.sheetImpl / CascadingMenu 同一配方：
-        // 真正的磨砂底是窗口级 ModouGlass.attach（系统实时模糊）+ ModouFrost.wrap（材质层），
-        // 面板再铺实色就会把模糊盖死。改玻璃只改 ModouGlass / ModouFrost 一处，书架与阅读页同变。
-        ModouGlassDrawable pbg = new ModouGlassDrawable(
-                ModouUi.alpha(theme.card, 0x0F), dp(24), false);
-        pbg.setRimWidth(ModouUi.dp(this, 2.5f));   // 修 0.9.153 编译错：Activity 的 dp 只收 int
-        panel.setBackground(pbg);
-        panel.setPadding(dp(18), dp(14), dp(18), dp(16));
-        panel.setClickable(true);
-
-        LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        head.setPadding(0, 0, 0, dp(4));
-        TextView t = new TextView(this);
-        t.setText(title);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19);
-        t.setTextColor(theme.text);
-        t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        // 0.9.156：目录面板用书名当标题，长书名会换行撑高 head、把右侧 ✕ 挤歪。
-        t.setSingleLine(true);
-        t.setEllipsize(TextUtils.TruncateAt.END);
-        head.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView x = new TextView(this);
-        x.setText("✕");
-        x.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        x.setTextColor(theme.sub);
-        x.setPadding(dp(10), dp(2), dp(6), dp(2));
-        x.setOnClickListener(v -> closeSheet());
-        head.addView(x);
-        panel.addView(head);
-
-        panel.addView(content);
-
-        FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        plp.gravity = Gravity.BOTTOM;
-        // 窗口宽度已是「屏宽 - 20dp」并居中，左右各 10dp 由窗口留出来，这里不再重复 margin。
-        // 0.9.154：包材质层（遮罩 + 薄纱 + 边缘泛光），与书架 sheet 同源；整块磨砂面板作为一个
-        // 整体随入场 / 避让 / 重放动画移动，避免「内容滑走、玻璃壳留在原地」。sheetShell 是动画载体。
-        View panelBox = ModouFrost.wrap(panel, 24);
-        wrap.addView(panelBox, plp);
-        sheetShell = panelBox;
-
-        // 浮起层次只靠卡片自身的圆角 + 淡阴影（elevation），不再画那圈白色外发光。
-        // 之前那圈光晕在亮色主题下太重、边缘也不干净；参照 ColorOS 17 的弹出菜单，
-        // 做法是「磨砂卡片 + 一点点阴影」，克制简洁。深色主题本来就不画，这里统一去掉。
-
-        // 0.9.154：窗口配方与书架 ModouUi.sheetImpl / CascadingMenu 完全同源 ——
-        // Dialog(Theme_Modou_Glass) + 窗口尺寸精确等于卡片 + ModouGlass.attach + ModouFrost.wrap。
-        // 0.9.153 曾把窗口设成全屏：setBackgroundBlurRadius 模糊的是「整个窗口」背后，于是整屏正文
-        // 糊成一团雾、底部再压一张菜单 —— 用户说的「菜单和模糊两个东西」。CascadingMenu 早在
-        // 0.9.144 修过同一个坑。现在窗口只包住面板，正文其余保持清晰。
-        Dialog d = new Dialog(this, R.style.Theme_Modou_Glass);
-        d.requestWindowFeature(Window.FEATURE_NO_TITLE);
-        d.setContentView(wrap);
-        d.setCanceledOnTouchOutside(true);   // 系统 dim 区承担「点外关闭」，等价于旧 scrim 的点击
+        final ModouUi.SheetHandle h = ModouUi.readerSheet(
+                this, sheetTitle, content, theme, this::closeSheet);
+        final Dialog d = h.dialog;
+        final FrameLayout wrap = h.root;
+        final View panelBox = h.shell;
         d.setOnDismissListener(di -> {
-            // 系统关闭（点外关闭）也要把状态清干净，否则 onBackPressed 会误判还有面板。
-            // 比对实例：旧面板迟到的 dismiss 不能动已经打开的新面板。
+            // 旧面板迟到的 dismiss 不能误清已经打开的新面板。
             if (sheetDialog != di) return;
             sheetDialog = null;
             overlay = null;
@@ -4507,7 +4552,6 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
             hideSeekHud(true);
         });
         d.setOnKeyListener((di, keyCode, ev) -> {
-            // 模态窗口会先吃退键，Activity.onBackPressed 收不到；这里接管为「关面板」。
             if (keyCode == android.view.KeyEvent.KEYCODE_BACK
                     && ev.getAction() == android.view.KeyEvent.ACTION_UP) {
                 closeSheet();
@@ -4515,57 +4559,32 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
             }
             return false;
         });
-        Window w = d.getWindow();
-        if (w != null) {
-            w.setGravity(Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-            w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
-            w.setDimAmount(theme.dark ? 0.50f : 0.34f);  // 等价旧 scrim，略收一点给模糊留通透
-            // 搜索面板含输入框：键盘弹起时整块上推，避免输入框被压住。
-            w.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
-        }
-        d.show();
-        if (w != null) ModouGlass.attach(w, dp(24));
-        if (w != null) {
-            // setLayout 必须在 show() 之后；宽度基准取 Activity decor，绝不能取 Dialog 自己的
-            // decor（否则 0.9.119 那种「越算越窄」的负反馈会重演）。旋转 / 分屏时跟着重算。
-            final Window win = w;
-            final View baseView = getWindow() != null ? getWindow().getDecorView() : null;
-            final int[] appliedBase = {-1};
-            final Runnable fit = () -> {
-                int sw = baseView != null ? baseView.getWidth() : 0;
-                if (sw <= 0) sw = getResources().getDisplayMetrics().widthPixels;
-                if (sw == appliedBase[0]) return;
-                appliedBase[0] = sw;
-                win.setLayout(Math.max(1, sw - dp(20)), ViewGroup.LayoutParams.WRAP_CONTENT);
-            };
-            win.getDecorView().addOnLayoutChangeListener(
-                    (v, l, top, r, b, ol, ot, or, ob) -> fit.run());
-            fit.run();
-        }
         sheetDialog = d;
         overlay = wrap;
-        sheetPanel = panel;
+        sheetPanel = h.panel;
+        sheetShell = panelBox;
         sheetDodging = false;
 
         if (effectiveAnimGrade() == 0) {
-            // 关闭：0 毫秒瞬间到位，完全无动画
             panelBox.setElevation(0f);
             wrap.setAlpha(1f);
             panelBox.setTranslationY(0f);
         } else if (effectiveAnimGrade() == 1) {
-            // 简约：干脆利落的短时淡入（120ms），无位移、无投影
             panelBox.setElevation(0f);
             wrap.setAlpha(0f);
             panelBox.setTranslationY(0f);
-            wrap.animate().alpha(1f).setDuration(120).setInterpolator(MD3_DECEL).start();
+            wrap.animate().alpha(1f).setDuration(ModouMotion.duration(this, 120))
+                    .setInterpolator(MD3_DECEL).start();
             runSheetSheen();
         } else {
-            // 标准：弹簧阻尼感（Overshoot 先过冲再回弹）的上滑 + 遮罩淡入
-            panelBox.setElevation(dp(16));
-            panelBox.setTranslationY(dp(60));
+            panelBox.setElevation(dp(rd().material == DesignSpec.Material.TONAL ? 4 : 16));
+            panelBox.setTranslationY(dp(rd().material == DesignSpec.Material.GLASS ? 60 : 36));
             wrap.setAlpha(0f);
-            wrap.animate().alpha(1f).setDuration(180).setInterpolator(MD3_DECEL).start();
-            panelBox.animate().translationY(0f).setDuration(280).setInterpolator(SPRING).start();
+            wrap.animate().alpha(1f).setDuration(ModouMotion.duration(this, 180))
+                    .setInterpolator(MD3_DECEL).start();
+            panelBox.animate().translationY(0f)
+                    .setDuration(ModouMotion.duration(this, rd().durMed))
+                    .setInterpolator(DesignSpec.interpolator(rd(), true, 1.6f)).start();
             runSheetSheen();
         }
     }
@@ -4688,6 +4707,9 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         GradientDrawable bg = new GradientDrawable();
         bg.setCornerRadius(dp(24));
         bg.setColor(theme.dark ? 0xF21A1F26 : 0xF7FFFFFF);
+        // 0.9.181：加一根发丝 rim —— 纯白药丸压在纸面上像贴纸，有边才有「浮起来」的实体感
+        bg.setStroke(Math.max(1, ModouUi.dp(this, 0.5f)),
+                theme.dark ? 0x2EFFFFFF : 0x14101826);
         seekHud.setBackground(bg);
         seekHudTitle.setTextColor(theme.sub);
         seekHudVal.setTextColor(theme.acc);
@@ -4891,12 +4913,11 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         box.setOrientation(LinearLayout.VERTICAL);
         int p = ModouUi.dp(this, 14);
         box.setPadding(p, ModouUi.dp(this, 8), p, 0);
-        EditText ed = new EditText(this);
-        ed.setText(before);
-        ed.setTextSize(14);
+        EditText ed = ModouUi.input(this, "章节正文", before, 6);
         ed.setTextColor(theme.text);
-        ed.setBackgroundColor(0x00000000);
-        ed.setGravity(Gravity.TOP);
+        ed.setHintTextColor(theme.sub);
+        ed.setGravity(Gravity.TOP | Gravity.START);
+        ed.setContentDescription("编辑章节正文");
         // 高度自适应：先按最小高度插入，量完文本后按实际行数撑开，上限取「弹层真正
         // 能给的空间」（与 ModouUi.sheetForm 的滚动区口径一致），超出就在框内滚动。
         // 不再写死「屏高的百分之几」：横屏机器屏高本来就矮，62% 只剩两百来 dp，
@@ -4930,12 +4951,9 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         LinearLayout editFooter = new LinearLayout(this);
         editFooter.setOrientation(LinearLayout.VERTICAL);
         final Dialog d = ModouUi.sheetForm(this, "编辑 · " + name, box, editFooter);
-        editFooter.addView(ModouUi.sheetButtons(this, d, "取消", "保存", null, () -> {
+        editFooter.addView(ModouUi.sheetButtonsGuarded(this, d, "取消", "保存", null, () -> {
             String t = String.valueOf(ed.getText());
-            if (t.contentEquals(before)) {
-                d.dismiss();
-                return;
-            }
+            if (t.contentEquals(before)) return true;
             StringBuilder h = new StringBuilder();
             for (String line : t.split("\n", -1)) {
                 String s = line.replace("\u3000", "").trim();
@@ -4944,17 +4962,24 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
                 h.append("<p>").append(escapeHtml(s)).append("</p>");
             }
             if (h.length() == 0) {
-                toast("内容为空，未保存");
-                return;
+                ed.setError("章节内容不能为空");
+                ed.requestFocus();
+                return false;
             }
-            ModouStore.get(this).cacheChapter(bookId, index, h.toString());
-            d.dismiss();
+            try {
+                ModouStore.get(this).cacheChapter(bookId, index, h.toString());
+            } catch (Throwable e) {
+                toast("保存失败：" + (e.getMessage() == null
+                        ? e.getClass().getSimpleName() : e.getMessage()));
+                return false;
+            }
             requestChapter(index, 0); // 分段变了，旧偏移不可靠，回本章开头
             // 写回原文件放后台：整本重建 + 网络/SAF 写可能慢，不挡阅读
             io.execute(() -> {
                 String fb = writeBackToFile();
                 runOnUiThread(() -> toast(fb));
             });
+            return true;
         }));
     }
 
@@ -5122,26 +5147,11 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
      * 只给「屏幕常亮」这类当场生效、不必关菜单的项用。
      */
     private void addSwitchMenuItem(LinearLayout list, String label, boolean on, PickBool cb) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout row = toggleRow(label, on, cb);
         row.setPadding(dp(14), dp(8), dp(12), dp(8));
-        GradientDrawable g = new GradientDrawable();
-        g.setColor(chipBg());
-        g.setCornerRadius(dp(16));
-        row.setBackground(g);
-
-        TextView t = new TextView(this);
-        t.setText(label);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        t.setTextColor(theme.text);
-        row.addView(t, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
-        LinearLayout sw = toggleSwitch(on, cb);
-        row.addView(sw);
-        row.setOnClickListener(v -> sw.performClick());
-
+        row.setBackground(ModouUi.squircle(this, chipBg(),
+                rd().material == DesignSpec.Material.TONAL ? 20
+                        : rd().material == DesignSpec.Material.LIQUID ? 14 : 16));
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         rlp.bottomMargin = dp(6);
@@ -5313,7 +5323,373 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
      * 十几行同级控件谁都不比谁重要；现在高频的四项（字号/行距/段距/页边距）连成一段，
      * 低频的交互设置全部收进折叠区，默认收起。
      */
+    /* ============ 极简·纪排版面板：纯 TextView 胶囊，零滑杆 / 零 Switch / 零粗线框 ============ */
+
+    private static final int MONO_PANEL_BG = 0xFF242731;
+    private static final int MONO_CHIP_ON = 0x1F5C7CE0;   // 极低透明度淡蓝实心块
+    private static final int MONO_TEXT = 0xFFFFFFFF;
+    private static final int MONO_SUB = 0xFF9AA0B0;
+
+    private TextView monoLabel(String s) {
+        TextView t = new TextView(this);
+        t.setText(s);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        t.setTextColor(MONO_SUB);
+        t.setPadding(0, ModouUi.dp(this, 12), 0, ModouUi.dp(this, 6));
+        return t;
+    }
+
+    private View monoDivider() {
+        View v = new View(this);
+        v.setBackgroundColor(0x14FFFFFF);
+        v.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, ModouUi.dp(this, 1))));
+        return v;
+    }
+
+    /** 胶囊：选中 = 极低透明度淡蓝实心圆角块 + 白字；未选中 = 透明底 + 灰字。无描边。 */
+    private TextView monoChip(String text, boolean on) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        t.setTextColor(on ? MONO_TEXT : MONO_SUB);
+        t.setGravity(Gravity.CENTER);
+        t.setSingleLine(true);
+        t.setIncludeFontPadding(false);
+        t.setPadding(ModouUi.dp(this, 8), ModouUi.dp(this, 9),
+                ModouUi.dp(this, 8), ModouUi.dp(this, 9));
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(on ? MONO_CHIP_ON : 0x00000000);
+        g.setCornerRadius(ModouUi.dp(this, 999));
+        t.setBackground(g);
+        t.setMinimumHeight(ModouUi.dp(this, 36));
+        t.setContentDescription(text + (on ? "，已选中" : "，未选中"));
+        return t;
+    }
+
+    /** 单选行：点哪个哪个变淡蓝底，就地重绘，不重建面板。 */
+    private LinearLayout monoChipRow(String title, String[] labels, int cur, Pick cb) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.addView(monoLabel(title));
+        LinearLayout line = new LinearLayout(this);
+        line.setOrientation(LinearLayout.HORIZONTAL);
+        line.setGravity(Gravity.CENTER_VERTICAL);
+        final TextView[] chips = new TextView[labels.length];
+        for (int i = 0; i < labels.length; i++) {
+            final int idx = i;
+            TextView t = monoChip(labels[i], i == cur);
+            chips[i] = t;
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            lp.setMargins(0, 0, ModouUi.dp(this, 6), 0);
+            t.setLayoutParams(lp);
+            t.setOnClickListener(v -> {
+                for (int j = 0; j < chips.length; j++) {
+                    ((GradientDrawable) chips[j].getBackground())
+                            .setColor(j == idx ? MONO_CHIP_ON : 0x00000000);
+                    chips[j].setTextColor(j == idx ? MONO_TEXT : MONO_SUB);
+                    chips[j].setContentDescription(labels[j]
+                            + (j == idx ? "，已选中" : "，未选中"));
+                }
+                if (cb != null) cb.on(idx);
+            });
+            line.addView(t);
+        }
+        row.addView(line);
+        return row;
+    }
+
+    /** 数值档位行：标签是纯文字，values 是实际写回字段的值。 */
+    private LinearLayout monoValueRow(String title, String[] labels, int[] values,
+                                      int cur, Pick cb) {
+        int sel = 0;
+        for (int i = 0; i < values.length; i++) {
+            if (values[i] == cur) { sel = i; break; }
+        }
+        return monoChipRow(title, labels, sel, i -> { if (cb != null) cb.on(values[i]); });
+    }
+
+    /** [关] [开] 文字胶囊，替代药丸 Switch。 */
+    private LinearLayout monoSwitchRow(String title, boolean on, PickBool cb) {
+        return monoChipRow(title, new String[]{"关", "开"}, on ? 1 : 0,
+                i -> { if (cb != null) cb.on(i == 1); });
+    }
+
+    /** 多选行：每项独立 on/off（页脚六项，两行三列）。 */
+    private LinearLayout monoMultiRow(String title, String[] labels, int[] bits,
+                                      int mask, java.util.function.IntConsumer cb) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.addView(monoLabel(title));
+        final int[] state = {mask};
+        LinearLayout line = null;
+        for (int i = 0; i < labels.length; i++) {
+            if (i % 3 == 0) {
+                line = new LinearLayout(this);
+                line.setOrientation(LinearLayout.HORIZONTAL);
+                row.addView(line);
+            }
+            final int bit = bits[i];
+            TextView t = monoChip(labels[i], (state[0] & bit) != 0);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            lp.setMargins(0, 0, ModouUi.dp(this, 6), ModouUi.dp(this, 6));
+            t.setLayoutParams(lp);
+            t.setOnClickListener(v -> {
+                state[0] ^= bit;
+                boolean on = (state[0] & bit) != 0;
+                ((GradientDrawable) t.getBackground())
+                        .setColor(on ? MONO_CHIP_ON : 0x00000000);
+                t.setTextColor(on ? MONO_TEXT : MONO_SUB);
+                if (cb != null) cb.accept(state[0]);
+            });
+            line.addView(t);
+        }
+        return row;
+    }
+
+    /**
+     * 极简·纪专属排版面板：纯实色底 #242731，全部控件都是 TextView 套圆角背景，
+     * 不创建 ModouPillSeekBar、不创建 Switch、不画蓝色粗线框。
+     */
+    private void showTypoPanelMono() {
+        seekBinds.clear();       // 无滑杆：预设套用时的 refreshSeeks() 走空列表
+        sizeLabel = null;
+        final int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.68f);
+        final ScrollView sc = new ScrollView(this) {
+            @Override protected void onMeasure(int wSpec, int hSpec) {
+                super.onMeasure(wSpec, MeasureSpec.makeMeasureSpec(maxH, MeasureSpec.AT_MOST));
+            }
+        };
+        sc.setBackgroundColor(MONO_PANEL_BG);
+        sc.setVerticalScrollBarEnabled(false);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackgroundColor(MONO_PANEL_BG);
+        box.setPadding(ModouUi.dp(this, 18), ModouUi.dp(this, 8),
+                ModouUi.dp(this, 18), ModouUi.dp(this, 24));
+
+        TextView head = new TextView(this);
+        head.setText("排版");
+        head.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        head.setTextColor(MONO_TEXT);
+        head.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        head.setPadding(0, ModouUi.dp(this, 4), 0, ModouUi.dp(this, 10));
+        box.addView(head);
+
+        // 阅读纸张入口
+        LinearLayout paper = new LinearLayout(this);
+        paper.setOrientation(LinearLayout.HORIZONTAL);
+        paper.setGravity(Gravity.CENTER_VERTICAL);
+        paper.setPadding(0, ModouUi.dp(this, 8), 0, ModouUi.dp(this, 8));
+        TextView pt = new TextView(this);
+        pt.setText("阅读纸张");
+        pt.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        pt.setTextColor(MONO_SUB);
+        paper.addView(pt, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView pv = new TextView(this);
+        pv.setText(DesignSpec.paperLabel(darkMode ? "dark" : lightTheme));
+        pv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        pv.setTextColor(MONO_TEXT);
+        paper.addView(pv);
+        TextView arrow = new TextView(this);
+        arrow.setText("›");
+        arrow.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        arrow.setTextColor(MONO_SUB);
+        arrow.setPadding(ModouUi.dp(this, 8), 0, 0, 0);
+        paper.addView(arrow);
+        paper.setOnClickListener(v -> PaperGalleryActivity.launchForResult(this, REQ_PAPER));
+        box.addView(paper);
+        box.addView(monoDivider());
+
+        // 预设槽位
+        box.addView(monoLabel("预设槽位"));
+        LinearLayout preset = new LinearLayout(this);
+        preset.setOrientation(LinearLayout.HORIZONTAL);
+        for (int i = 0; i < 3; i++) {
+            final int idx = i;
+            TextView b = monoChip(PRESET_NAME[i], false);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            lp.setMargins(0, 0, ModouUi.dp(this, 6), 0);
+            b.setLayoutParams(lp);
+            b.setOnClickListener(v -> applyPreset(idx));
+            b.setOnLongClickListener(v -> { savePreset(idx); return true; });
+            preset.addView(b);
+        }
+        box.addView(preset);
+        box.addView(monoDivider());
+
+        box.addView(monoValueRow("字号", new String[]{"14", "16", "18", "20", "22", "24"},
+                new int[]{14, 16, 18, 20, 22, 24}, fontSize,
+                v -> { fontSize = v; applyStyleNow(); }));
+        box.addView(monoDivider());
+
+        box.addView(monoChipRow("字体", new String[]{"宋体", "黑体", "楷体"},
+                fontIndex(font), i -> {
+                    font = new String[]{"song", "hei", "kai"}[i];
+                    pageView.clearPageCache();
+                    applyStyleNow();
+                }));
+        box.addView(monoDivider());
+
+        box.addView(monoChipRow("字重", new String[]{"细", "常规", "中粗", "粗"},
+                weightIndex(weightVal), i -> {
+                    weightVal = new int[]{300, 400, 500, 600}[i];
+                    applyStyleNow();
+                }));
+        box.addView(monoDivider());
+
+        // 行距档位取现有合法区间（下限 MIN_LINE_MUL=1.7）：若按示例给 1.2/1.5，
+        // applyStyle 会夹到 1.7，面板读数与正文不一致。
+        box.addView(monoChipRow("行距", new String[]{"1.7", "1.9", "2.1", "2.4"},
+                lineHeight < 1.8f ? 0 : lineHeight < 2.0f ? 1 : lineHeight < 2.3f ? 2 : 3,
+                i -> {
+                    lineHeight = new float[]{1.7f, 1.9f, 2.1f, 2.4f}[i];
+                    applyStyleNow();
+                }));
+        box.addView(monoDivider());
+
+        box.addView(monoChipRow("段距", new String[]{"无", "0.5", "1.0", "1.5"},
+                paraGap < 0.25f ? 0 : paraGap < 0.75f ? 1 : paraGap < 1.25f ? 2 : 3,
+                i -> {
+                    paraGap = new float[]{0f, 0.5f, 1.0f, 1.5f}[i];
+                    applyStyleNow();
+                }));
+        box.addView(monoDivider());
+
+        box.addView(monoValueRow("左右页边距", new String[]{"8", "16", "24", "36"},
+                new int[]{8, 16, 24, 36}, marginPx,
+                v -> { marginPx = v; applyStyleNow(); }));
+        box.addView(monoValueRow("上边距", new String[]{"0", "12", "24", "48"},
+                new int[]{0, 12, 24, 48}, topGapDp,
+                v -> { topGapDp = v; applyStyleNow(); }));
+        box.addView(monoValueRow("下边距", new String[]{"0", "12", "24", "48"},
+                new int[]{0, 12, 24, 48}, botGapDp,
+                v -> { botGapDp = v; applyStyleNow(); }));
+        box.addView(monoDivider());
+
+        box.addView(monoChipRow("文字亮度", new String[]{"50%", "75%", "100%"},
+                brightness < 0.625f ? 0 : brightness < 0.875f ? 1 : 2,
+                i -> {
+                    brightness = new float[]{0.5f, 0.75f, 1f}[i];
+                    if (darkMode) brightnessDark = brightness; else brightnessLight = brightness;
+                    pageView.setBright(brightness);
+                    syncSettings();
+                }));
+        box.addView(monoValueRow("页眉/页脚字号", new String[]{"9", "12", "15", "20"},
+                new int[]{9, 12, 15, 20}, Math.round(hfSizeSp),
+                v -> { hfSizeSp = v; applyStyleNow(); }));
+        box.addView(monoDivider());
+
+        box.addView(monoSwitchRow("行尾标点不压缩", justifyHang, on -> {
+            justifyHang = on;
+            applyStyleNow();
+        }));
+        box.addView(monoSwitchRow("隐藏书内图片", hideImages, on -> {
+            hideImages = on;
+            ModouStore.get(this).putSettingStr("readerHideImages", on ? "1" : "0");
+            applyStyleNow();
+        }));
+        box.addView(monoSwitchRow("沉浸时显示页眉", headImmersive, on -> {
+            headImmersive = on;
+            ModouStore.get(this).putSettingStr("readerHeadImmersive", on ? "1" : "0");
+            applyStyleNow();
+        }));
+        box.addView(monoDivider());
+
+        box.addView(monoChipRow("页眉", new String[]{"不显示", "章节名", "书名", "书名+章"},
+                headMode, i -> {
+                    headMode = i;
+                    saveHeadFoot();
+                    applyStyleNow();
+                }));
+        box.addView(monoMultiRow("页脚（可多选）",
+                new String[]{"页码", "时间", "电量", "全书进度", "本章进度", "剩余章数"},
+                new int[]{1, 2, 4, 8, 16, 32}, footMask, m -> {
+                    footMask = m;
+                    saveHeadFoot();
+                    readBattery();
+                    applyStyleNow();
+                    hfHandler.removeCallbacks(hfTick);
+                    if (footMask != 0) hfHandler.postDelayed(hfTick, 30000);
+                }));
+        box.addView(monoDivider());
+
+        box.addView(monoChipRow("点击区域", new String[]{"经典", "左手", "单手"},
+                "left".equals(tapMode) ? 1 : "single".equals(tapMode) ? 2 : 0,
+                i -> {
+                    tapMode = i == 1 ? "left" : i == 2 ? "single" : "classic";
+                    ModouStore.get(this).putSettingStr("readerTapMode", tapMode);
+                    applyTapZones();
+                }));
+        box.addView(monoChipRow("翻页方式", new String[]{"左右翻页", "上下滚动"},
+                scrollMode ? 1 : 0, i -> {
+                    scrollMode = i == 1;
+                    applyStyleNow();
+                }));
+        box.addView(monoChipRow("动效", new String[]{"关闭", "简约", "标准"},
+                animGrade, i -> {
+                    animGrade = i;
+                    ModouStore.get(this).putSettingStr("uiAnimGrade", String.valueOf(i));
+                    replaySheetEnter();
+                }));
+
+        sc.addView(box);
+        showSheet("", sc);
+        typoShowing = true;
+        // 外壳也压成纯实色：杜绝半透明玻璃把正文文字透上来叠在一起
+        if (sheetShell != null) {
+            GradientDrawable solid = new GradientDrawable();
+            solid.setColor(MONO_PANEL_BG);
+            solid.setCornerRadius(ModouUi.dp(this, 24));
+            sheetShell.setBackground(solid);
+            sheetShell.setElevation(0f);
+        }
+        if (sheetPanel != null) sheetPanel.setBackgroundColor(0x00000000);
+    }
+
+    /** 极简·纪工具坞按钮：只有图标，没有下方文字、没有药丸底、没有选中色块。 */
+    private View dockIconOnly(int iconRes, boolean on, boolean disabled, Runnable r) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER);
+        box.setLayoutParams(new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        box.setPadding(0, dp(14), 0, dp(14));
+        ImageView iv = new ImageView(this);
+        iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        iv.setImageDrawable(tinted(iconRes, on ? theme.acc : monoInk()));
+        int s = dp(22);
+        box.addView(iv, new LinearLayout.LayoutParams(s, s));
+        if (disabled) box.setAlpha(0.3f);
+        else box.setOnClickListener(v -> { lastDockBtn = v; r.run(); });
+        return box;
+    }
+
+    /** 「Aa」是文字图标，同样去掉下方标签。 */
+    private View dockAaIcon(Runnable r) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER);
+        box.setLayoutParams(new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        box.setPadding(0, dp(14), 0, dp(14));
+        TextView aa = new TextView(this);
+        aa.setText("Aa");
+        aa.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        aa.setTypeface(Typeface.SERIF, Typeface.BOLD);
+        aa.setTextColor(monoInk());
+        aa.setGravity(Gravity.CENTER);
+        box.addView(aa, new LinearLayout.LayoutParams(dp(22), dp(22)));
+        box.setOnClickListener(v -> r.run());
+        return box;
+    }
+
     private void showTypoPanel() {
+        if (mono()) { showTypoPanelMono(); return; }
         // 面板高度收到 58%：拖滑杆时要能看见上半屏正文（配合拖动时的半透明）
         final int maxH = (int) (getResources().getDisplayMetrics().heightPixels * 0.58f);
         seekBinds.clear();
@@ -5730,9 +6106,18 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
 
     /** 选项胶囊：选中柔和蓝实底 + 白字，未选半透明浅灰无描边（描边会让它看着像输入框） */
     private GradientDrawable pillBg(boolean on) {
+        DesignSpec sp = rd();
         GradientDrawable g = new GradientDrawable();
-        g.setColor(on ? theme.acc : chipBg());
-        g.setCornerRadius(ModouUi.dp(this, 999));
+        if (sp.rdDockStyle == 0) {
+            // 墨读：强调色实底 + 999 胶囊（原值）
+            g.setColor(on ? theme.acc : chipBg());
+            g.setCornerRadius(ModouUi.dp(this, 999));
+            return g;
+        }
+        // iOS：选中 = 系统蓝 1F 淡染胶囊；M3：选中 = tonal 8dp 块，未选中完全透明
+        g.setColor(on ? ModouUi.alpha(theme.acc, 0x1F)
+                : (sp.rdDockStyle == 2 ? 0x00000000 : chipBg()));
+        g.setCornerRadius(ModouUi.dp(this, sp.rdDockStyle == 2 ? 8 : 999));
         return g;
     }
 
@@ -5801,47 +6186,30 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         return theme.dark ? 0x1FFFFFFF : 0x0F000000;
     }
 
-    /** 分段控件行：标题 + 一排等宽按钮，选中态高亮 */
+    /** 分段控件行：公共三语言形状、状态层与选中语义，配色仍跟随阅读纸张。 */
     private LinearLayout segRow(String title, String[] labels, int cur, Pick cb) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.VERTICAL);
         row.setPadding(0, ModouUi.dp(this, 8), 0, ModouUi.dp(this, 8));
         row.addView(ModouUi.tv(this, title, 13, theme.sub));
-        LinearLayout seg = new LinearLayout(this);
-        seg.setOrientation(LinearLayout.HORIZONTAL);
-        seg.setPadding(0, ModouUi.dp(this, 8), 0, 0);
-        int n = labels.length;
-        for (int i = 0; i < n; i++) {
-            final int idx = i;
-            boolean on = i == cur;
-            TextView b = ModouUi.tv(this, labels[i], 13.5f, on ? segOnText() : theme.text);
-            b.setGravity(Gravity.CENTER);
-            b.setTypeface(b.getTypeface(), on ? Typeface.BOLD : Typeface.NORMAL);
-            b.setPadding(ModouUi.dp(this, 6), ModouUi.dp(this, 10), ModouUi.dp(this, 6), ModouUi.dp(this, 10));
-            b.setBackground(pillBg(on));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            lp.setMargins(0, 0, ModouUi.dp(this, 6), 0);
-            b.setLayoutParams(lp);
-            b.setOnClickListener((x) -> {
-                if (cb != null) cb.on(idx);
-                // 重画选中态
-                for (int k = 0; k < seg.getChildCount(); k++) {
-                    TextView c = (TextView) seg.getChildAt(k);
-                    boolean on2 = k == idx;
-                    c.setTextColor(on2 ? segOnText() : theme.text);
-                    c.setTypeface(c.getTypeface(), on2 ? Typeface.BOLD : Typeface.NORMAL);
-                    c.setBackground(pillBg(on2));
-                }
-            });
-            seg.addView(b);
-        }
-        row.addView(seg);
+        LinearLayout seg = ModouUi.readerSegment(this, labels, cur,
+                idx -> { if (cb != null) cb.on(idx); }, theme);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = ModouUi.dp(this, 8);
+        row.addView(seg, lp);
         return row;
     }
 
-    /** 选中分段的前景色：强调色做底时取浅色文字 */
+    /** 选中分段的前景色：墨读强调色做底时取浅色文字；iOS / M3 用淡染底 + 强调色文字 */
     private int segOnText() {
+        if (rd().rdDockStyle != 0) return theme.acc;
         return theme.dark ? 0xFF1B1D21 : 0xFFFFFFFF;
+    }
+
+    /** 未选中分段的前景色：0.9.173 起 iOS / M3 用次级灰（分段控件的常态） */
+    private int segOffText() {
+        return rd().rdDockStyle == 0 ? theme.text : theme.sub;
     }
 
     /**
@@ -5902,21 +6270,24 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         row.addView(head);
 
         final int span = Math.max(1, max - min);
-        SeekBar sb = new SeekBar(this);
+        // 0.9.175：排版面板的三根滑杆换成自绘三语言滑杆（与工具坞进度条同一个类）。
+        // 系统 SeekBar 的轨道粗细 / thumb 只能靠 tint 调，做不出 M3 的断轨与停靠点；
+        // 而且它的 progressDrawable 与 thumb 是两套坐标，小比例时会露出「圆柱截面」。
+        final ModouPillSeekBar sb = new ModouPillSeekBar(this);
         sb.setMax(span);
         sb.setProgress(Math.max(0, Math.min(span, val - min)));
-        sb.setKeyProgressIncrement(Math.max(1, step));
-        sb.setSplitTrack(false);
         sb.setPadding(ModouUi.dp(this, 11), 0, ModouUi.dp(this, 11), 0);
         sb.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ModouUi.dp(this, 36)));
-        try {
-            sb.setProgressDrawable(rangeTrack());
-            sb.setThumb(rangeThumb());
-            sb.setThumbOffset(0);
-        } catch (Throwable ignored) {
-            /* 旧 API 退回系统外观 */
-        }
+        // 配色仍取纸张色板（与工具坞进度条完全同一组），只换形状由规格决定
+        sb.setPalette(
+                theme.dark ? 0x2BFFFFFF : 0x1F000000,
+                theme.acc,
+                theme.dark ? 0x26FFFFFF : 0x40FFFFFF,
+                theme.acc,
+                theme.dark ? 0xFFF0EDE4 : 0xFFFFFFFF,
+                theme.dark ? 0xFFF7F5EF : 0xFFFFFFFF,
+                theme.dark ? 0x33FFFFFF : 0x14000000);
         // 只记录手指落点，不消费事件（返回 false）—— SeekBar 自己还要拖动。
         // 浮窗要靠这个 Y 躲开手指：固定位置放哪都可能正好压在手下。
         final float[] touchY = {-1f};
@@ -5942,7 +6313,7 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
                     // 否则拖到底也不知道自己动没动（尤其行距这种整页重排的滑杆）
                     if (v2 != lastV[0]) {
                         lastV[0] = v2;
-                        bar.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
+                        sb.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK);
                     }
                     // 拖动中即时预览；样式应用做 60ms 节流，避免每帧重排掉帧。
                     // live=false 的滑杆（文字亮度）只改正文 Paint 颜色、不重排，跳过这里
@@ -5955,7 +6326,7 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
                 // 按下就把面板整体沉下去，只留标题条；数值改由浮窗显示
                 if (dodge) dodgeSheet(true);
                 if (guide != 0) pageView.setGuide(guide);
-                int v0 = min + Math.round((float) bar.getProgress() / Math.max(1, step)) * Math.max(1, step);
+                int v0 = min + Math.round((float) sb.getProgress() / Math.max(1, step)) * Math.max(1, step);
                 v0 = Math.max(min, Math.min(max, v0));
                 showSeekHud(title, fmt.of(v0), touchY[0]);
             }
@@ -5966,7 +6337,7 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
                 if (guide != 0) pageView.setGuide(0);
                 hideSeekHud(false);
                 // 松手补一次，保证落库的是最终值而不是防抖窗口里的中间值
-                int v2 = min + Math.round((float) bar.getProgress() / Math.max(1, step)) * Math.max(1, step);
+                int v2 = min + Math.round((float) sb.getProgress() / Math.max(1, step)) * Math.max(1, step);
                 v2 = Math.max(min, Math.min(max, v2));
                 if (cb != null) cb.on(v2);
                 if (live) applyStyleNow();
@@ -5975,103 +6346,6 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         row.addView(sb);
         seekBinds.add(new SeekBind(sb, v, min, max, step, fmt, cur));
         return row;
-    }
-
-    /**
-     * 滑杆底轨：8dp 加粗、半透明浅灰；已滑过一段用柔和蓝。
-     *
-     * 以前是「4dp 细线 + 强调色圆点 + 白描边」，视觉上是一根线挂了个球；
-     * 加粗到 8dp 之后轨道本身有体积，滑块是一颗落在轨道上的球 —— 系统音量条的关系。
-     * 原来那条沿轨道的高光线一并去掉：8dp 上再加高光会变成塑料管。
-     */
-    private Drawable rangeTrack() {
-        final int trackBg = theme.dark ? 0x2BFFFFFF : 0x1F000000;
-        final int trackOn = theme.acc;
-        final float h = ModouUi.dp(this, 8);
-        final float r = h / 2f;
-        return new Drawable() {
-            private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-            @Override
-            public void draw(Canvas c) {
-                Rect b = getBounds();
-                float cy = b.centerY();
-                p.setColor(trackBg);
-                c.drawRoundRect(new RectF(b.left, cy - h / 2f, b.right, cy + h / 2f), r, r, p);
-                float w = b.width() * (getLevel() / 10000f);
-                if (w > 0.5f) {
-                    p.setColor(trackOn);
-                    c.drawRoundRect(new RectF(b.left, cy - h / 2f, b.left + w, cy + h / 2f), r, r, p);
-                }
-            }
-
-            @Override
-            public void setAlpha(int alpha) {
-            }
-
-            @Override
-            public void setColorFilter(ColorFilter cf) {
-            }
-
-            @Override
-            public int getOpacity() {
-                return PixelFormat.TRANSLUCENT;
-            }
-        };
-    }
-
-    /**
-     * 滑杆滑块：24dp 纯白圆球 + 微弱投影（向下 1dp 的半透明黑圈）。
-     *
-     * 投影不能用 setShadowLayer —— 硬件加速下它只在软件层生效，SeekBar 不会为此降级。
-     * 所以画一个比球大 1dp、略向下偏移的柔光圆垫在下面，观感等价且没有兼容性问题。
-     * 再补一圈 8% 墨色细描边：素月白的卡片也是白的，没有描边白球会糊在背景里。
-     */
-    private Drawable rangeThumb() {
-        final float size = ModouUi.dp(this, 24);
-        final float rad = ModouUi.dp(this, 10);
-        return new Drawable() {
-            private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-            @Override
-            public void draw(Canvas c) {
-                float cx = getBounds().centerX();
-                float cy = getBounds().centerY();
-                p.setStyle(Paint.Style.FILL);
-                p.setColor(0x24000000);
-                c.drawCircle(cx, cy + ModouUi.dp(NativeReaderActivity.this, 1f), rad + ModouUi.dp(NativeReaderActivity.this, 1.2f), p);
-                p.setColor(0xFFFFFFFF);
-                c.drawCircle(cx, cy, rad, p);
-                p.setStyle(Paint.Style.STROKE);
-                p.setStrokeWidth(ModouUi.dp(NativeReaderActivity.this, 0.8f));
-                p.setColor(0x14000000);
-                c.drawCircle(cx, cy, rad - ModouUi.dp(NativeReaderActivity.this, 0.4f), p);
-                p.setStyle(Paint.Style.FILL);
-            }
-
-            @Override
-            public int getIntrinsicWidth() {
-                return (int) size;
-            }
-
-            @Override
-            public int getIntrinsicHeight() {
-                return (int) size;
-            }
-
-            @Override
-            public void setAlpha(int alpha) {
-            }
-
-            @Override
-            public void setColorFilter(ColorFilter cf) {
-            }
-
-            @Override
-            public int getOpacity() {
-                return PixelFormat.TRANSLUCENT;
-            }
-        };
     }
 
     /** 拖动滑杆时的防抖重排：120ms 内的连续改动只应用最后一次 */
@@ -6129,64 +6403,8 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
      * 用户会怀疑到底点没点上。药丸轨道 + 滑块位移是唯一不需要读文字的提示。
      */
     private LinearLayout toggleRow(String title, boolean on, PickBool cb) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, ModouUi.dp(this, 11), 0, ModouUi.dp(this, 11));
-        row.addView(ModouUi.tv(this, title, 14.5f, theme.text),
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        final LinearLayout sw = toggleSwitch(on, cb);
-        row.addView(sw);
-        row.setOnClickListener(v -> sw.performClick());
-        return row;
-    }
-
-    /** 拨动开关本体：46×28 药丸 + 22dp 白球，开=柔和蓝底，关=浅灰底，滑块 170ms 滑动 */
-    private LinearLayout toggleSwitch(boolean on, PickBool cb) {
-        final boolean[] st = {on};
-        final int trackW = ModouUi.dp(this, 46), trackH = ModouUi.dp(this, 28);
-        final int knobS = ModouUi.dp(this, 22), inset = ModouUi.dp(this, 3);
-        final int travel = trackW - knobS - inset * 2;
-
-        final LinearLayout pill = new LinearLayout(this);
-        pill.setOrientation(LinearLayout.HORIZONTAL);
-        pill.setGravity(Gravity.CENTER_VERTICAL);
-        pill.setLayoutParams(new LinearLayout.LayoutParams(trackW, trackH));
-
-        final View knob = new View(this);
-        GradientDrawable kb = new GradientDrawable();
-        kb.setShape(GradientDrawable.OVAL);
-        kb.setColor(0xFFFFFFFF);
-        knob.setBackground(kb);
-        knob.setElevation(ModouUi.dp(this, 1.5f));
-        LinearLayout.LayoutParams klp = new LinearLayout.LayoutParams(knobS, knobS);
-        klp.leftMargin = inset;
-        pill.addView(knob, klp);
-
-        final boolean[] first = {true};
-        final Runnable render = () -> {
-            GradientDrawable bg = new GradientDrawable();
-            bg.setCornerRadius(trackH / 2f);
-            bg.setColor(st[0] ? theme.acc : (theme.dark ? 0x33FFFFFF : 0x1F000000));
-            pill.setBackground(bg);
-            float to = st[0] ? travel : 0f;
-            if (first[0]) {
-                knob.setTranslationX(to);
-                first[0] = false;
-            } else {
-                knob.animate().translationX(to).setDuration(170)
-                        .setInterpolator(MD3_DECEL).start();
-            }
-        };
-        render.run();
-
-        pill.setClickable(true);
-        pill.setOnClickListener(v -> {
-            st[0] = !st[0];
-            render.run();
-            if (cb != null) cb.on(st[0]);
-        });
-        return pill;
+        return ModouUi.readerSwitchRow(this, title, on,
+                value -> { if (cb != null) cb.on(value); }, theme);
     }
 
     private View div() {
@@ -6263,32 +6481,18 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
         inRow.setOrientation(LinearLayout.HORIZONTAL);
         inRow.setGravity(Gravity.CENTER_VERTICAL);
 
-        EditText input = new EditText(this);
-        input.setHint("搜索全书正文");
+        EditText input = ModouUi.searchField(this, "搜索全书正文");
         input.setHintTextColor(theme.sub);
         input.setTextColor(theme.text);
-        input.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         input.setText(preset == null ? "" : preset);
         input.setSingleLine(true);
-        input.setBackground(chipDrawable(ModouUi.dp(this, 999)));
-        input.setPadding(ModouUi.dp(this, 14), ModouUi.dp(this, 9),
-                ModouUi.dp(this, 14), ModouUi.dp(this, 9));
-        inRow.addView(input, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        inRow.addView(input, new LinearLayout.LayoutParams(0, dp(48), 1f));
 
-        TextView searchBtn = new TextView(this);
-        searchBtn.setText("搜索");
-        searchBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        searchBtn.setTextColor(segOnText());
-        searchBtn.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        searchBtn.setGravity(Gravity.CENTER);
-        searchBtn.setPadding(ModouUi.dp(this, 16), ModouUi.dp(this, 9),
-                ModouUi.dp(this, 16), ModouUi.dp(this, 9));
-        GradientDrawable gb = new GradientDrawable();
-        gb.setColor(theme.acc);
-        gb.setCornerRadius(ModouUi.dp(this, 999));
-        searchBtn.setBackground(gb);
+        TextView searchBtn = ModouUi.button(this, "搜索",
+                DesignSpec.ButtonKind.FILLED, ModouUi.CAPSULE, null);
+        searchBtn.setContentDescription("搜索全书正文");
         LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
         blp.leftMargin = ModouUi.dp(this, 8);
         inRow.addView(searchBtn, blp);
         box.addView(inRow);
@@ -6515,15 +6719,16 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
             searchNav.setElevation(dp(6));
             searchNav.setPadding(dp(8), dp(2), dp(8), dp(2));
 
-            searchNav.addView(navIcon(R.drawable.ic_rd_prev, theme.text,
+            searchNav.addView(navIcon(R.drawable.ic_rd_prev, theme.text, "上一个搜索结果",
                     () -> gotoHit(lastHitPos - 1)));
             searchNavCount = ModouUi.tv(this, "", 13.5f, theme.text);
             searchNavCount.setGravity(Gravity.CENTER);
             searchNav.addView(searchNavCount, new LinearLayout.LayoutParams(0, dp(44), 1f));
             searchNav.addView(navText("搜索", theme.acc, this::toggleSearch));
-            searchNav.addView(navIcon(R.drawable.ic_rd_next, theme.text,
+            searchNav.addView(navIcon(R.drawable.ic_rd_next, theme.text, "下一个搜索结果",
                     () -> gotoHit(lastHitPos + 1)));
-            searchNav.addView(navIcon(R.drawable.ic_rd_close, theme.sub, this::hideSearchNav));
+            searchNav.addView(navIcon(R.drawable.ic_rd_close, theme.sub, "关闭搜索导航",
+                    this::hideSearchNav));
 
             FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -6561,13 +6766,17 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
      * ✕ 却是满字高的居中字符 —— 两个放一起永远一大一小、一高一低。矢量图没有基线，
      * 20dp 盒子放进 44dp 触摸区正好光学居中，三枚尺寸完全一致。
      */
-    private View navIcon(int res, int color, Runnable r) {
+    private View navIcon(int res, int color, String description, Runnable r) {
         ImageView iv = new ImageView(this);
-        iv.setLayoutParams(new LinearLayout.LayoutParams(dp(44), dp(44)));
+        iv.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48)));
         iv.setPadding(dp(12), dp(12), dp(12), dp(12));
         iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
         iv.setImageDrawable(tinted(res, color));
+        iv.setContentDescription(description);
+        iv.setTooltipText(description);
+        iv.setFocusable(true);
         iv.setOnClickListener(v -> r.run());
+        ModouMotion.press(iv);
         return iv;
     }
 
@@ -6796,6 +7005,11 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
                 b.setAlpha(on ? 1f : 0f);
                 tabTv[i] = t;
                 tabBar[i] = b;
+                col.setMinimumHeight(dp(48));
+                col.setFocusable(true);
+                col.setSelected(on);
+                col.setContentDescription(names[i] + (on ? "，已选中" : "，未选中"));
+                col.setStateDescription(on ? "已选中" : "未选中");
                 col.setOnClickListener(v -> select(m));
                 tabs.addView(col, new LinearLayout.LayoutParams(
                         0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -6820,17 +7034,11 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
             box.addView(back2cur, b2clp);
 
             // ---- 筛选框 ----
-            filter = new EditText(NativeReaderActivity.this);
+            filter = ModouUi.searchField(NativeReaderActivity.this,
+                    "搜章名 / 输入章号直接跳，如 128");
             filter.setSingleLine(true);
-            filter.setHint("搜章名 / 输入章号直接跳，如 128");
-            filter.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f);
             filter.setTextColor(theme.text);
             filter.setHintTextColor(ModouUi.alpha(theme.sub, 0xB0));
-            GradientDrawable fbg = new GradientDrawable();
-            fbg.setColor(theme.bg);
-            fbg.setCornerRadius(dp(10));
-            filter.setBackground(fbg);
-            filter.setPadding(dp(12), dp(7), dp(12), dp(7));
             LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             flp.topMargin = dp(8);
@@ -6923,13 +7131,23 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
             clearBm = ModouUi.tv(NativeReaderActivity.this, "清空本书书签", 13, theme.acc);
             clearBm.setGravity(Gravity.CENTER);
             clearBm.setPadding(0, dp(10), 0, dp(2));
+            clearBm.setMinimumHeight(dp(48));
+            clearBm.setContentDescription("清空本书全部书签");
             clearBm.setOnClickListener(v -> {
-                for (JSONObject o : bms) {
-                    ModouStore.get(NativeReaderActivity.this).del("bookmarks", o.optString("id", ""));
+                if (bms.isEmpty()) {
+                    toast("本书还没有书签");
+                    return;
                 }
-                bms.clear();
-                closeSheet();
-                toast("已清空");
+                ModouUi.confirm(NativeReaderActivity.this, "清空本书书签",
+                        "将永久删除本书的 " + bms.size() + " 条书签，此操作无法撤销。", () -> {
+                            for (JSONObject o : bms) {
+                                ModouStore.get(NativeReaderActivity.this).del(
+                                        "bookmarks", o.optString("id", ""));
+                            }
+                            bms.clear();
+                            closeSheet();
+                            toast("已清空本书书签");
+                        });
             });
             box.addView(clearBm);
 
@@ -6956,9 +7174,14 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
             if (mode == m) return;
             mode = m;
             for (int i = 0; i < 2; i++) {
-                tabTv[i].setTextColor(i == m ? theme.text : theme.sub);
-                tabTv[i].setTypeface(Typeface.DEFAULT, i == m ? Typeface.BOLD : Typeface.NORMAL);
-                tabBar[i].setAlpha(i == m ? 1f : 0f);
+                boolean selected = i == m;
+                tabTv[i].setTextColor(selected ? theme.text : theme.sub);
+                tabTv[i].setTypeface(Typeface.DEFAULT, selected ? Typeface.BOLD : Typeface.NORMAL);
+                tabBar[i].setAlpha(selected ? 1f : 0f);
+                View tab = (View) tabTv[i].getParent();
+                tab.setSelected(selected);
+                tab.setContentDescription(tabTv[i].getText() + (selected ? "，已选中" : "，未选中"));
+                tab.setStateDescription(selected ? "已选中" : "未选中");
             }
             filter.setText("");
             fill();
@@ -7121,21 +7344,18 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
                     wrap.setGravity(Gravity.CENTER_VERTICAL);
                     wrap.addView(row, new LinearLayout.LayoutParams(
                             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-                    TextView del = new TextView(NativeReaderActivity.this);
-                    del.setText("×");
-                    del.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
-                    del.setTextColor(ModouUi.alpha(theme.sub, 0xB0));
-                    del.setGravity(Gravity.CENTER);
-                    del.setLayoutParams(new LinearLayout.LayoutParams(dp(34), dp(34)));
-                    del.setOnClickListener(v -> {
-                        ModouStore.get(NativeReaderActivity.this).del("bookmarks", r.id);
-                        bms.clear();
-                        bms.addAll(bookmarksOf());
-                        if (tabTv.length > 1) tabTv[1].setText("书签 · " + bms.size());
-                        fill();
-                        toast("已删除书签");
-                    });
-                    wrap.addView(del);
+                    ImageView del = ModouUi.topBtn(NativeReaderActivity.this,
+                            ModouGlyph.TRASH, 48, theme.sub, v -> {
+                                ModouStore.get(NativeReaderActivity.this).del("bookmarks", r.id);
+                                bms.clear();
+                                bms.addAll(bookmarksOf());
+                                if (tabTv.length > 1) tabTv[1].setText("书签 · " + bms.size());
+                                fill();
+                                toast("已删除书签");
+                            });
+                    del.setContentDescription("删除书签：" + r.label);
+                    del.setTooltipText(del.getContentDescription());
+                    wrap.addView(del, new LinearLayout.LayoutParams(dp(48), dp(48)));
                     return wrap;
                 }
             };
@@ -7277,8 +7497,17 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
      */
     private ListView sheetList(String[] items, String[] subs, int current) {
         ListView lv = new ListView(this);
-        lv.setDivider(null);
-        lv.setDividerHeight(0);
+        DesignSpec lsp = rd();
+        if (lsp.rdTocDividerStartDp > 0) {
+            // iOS grouped list：行间 0.5px、从文字左缩进起画（与设置页同一套）
+            lv.setDivider(new android.graphics.drawable.InsetDrawable(
+                    new android.graphics.drawable.ColorDrawable(ModouUi.alpha(theme.text, 0x1A)),
+                    dp(lsp.rdTocDividerStartDp), 0, dp(16), 0));
+            lv.setDividerHeight(Math.max(1, ModouUi.dp(this, 0.5f)));
+        } else {
+            lv.setDivider(null);
+            lv.setDividerHeight(0);
+        }
         lv.setVerticalScrollBarEnabled(false);
         lv.setCacheColorHint(Color.TRANSPARENT);
         lv.setAdapter(sheetAdapter(items, subs, current));
@@ -7310,15 +7539,16 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
                     h = new SheetRowHolder();
                     LinearLayout row = new LinearLayout(NativeReaderActivity.this);
                     row.setOrientation(LinearLayout.VERTICAL);
-                    int pd = ModouUi.dp(NativeReaderActivity.this, 8);
-                    row.setPadding(pd, ModouUi.dp(NativeReaderActivity.this, 11), pd,
-                            ModouUi.dp(NativeReaderActivity.this, 11));
+                    DesignSpec rowSp = rd();
+                    int pd = ModouUi.dp(NativeReaderActivity.this, rowSp.rdTocSelectedFill ? 12 : 8);
+                    row.setPadding(pd, ModouUi.dp(NativeReaderActivity.this, rowSp.rdTocPadV), pd,
+                            ModouUi.dp(NativeReaderActivity.this, rowSp.rdTocPadV));
                     TextView t = new TextView(NativeReaderActivity.this);
-                    t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+                    t.setTextSize(TypedValue.COMPLEX_UNIT_SP, rowSp.rdTocTitleSp);
                     t.setEllipsize(TextUtils.TruncateAt.END);
                     row.addView(t);
                     TextView s = new TextView(NativeReaderActivity.this);
-                    s.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                    s.setTextSize(TypedValue.COMPLEX_UNIT_SP, rowSp.rdTocSubSp);
                     s.setSingleLine(true);
                     s.setEllipsize(TextUtils.TruncateAt.END);
                     s.setTextColor(theme.sub);
@@ -7330,6 +7560,14 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
                     row.setTag(h);
                 }
                 boolean on = i == current;
+                DesignSpec rsp = rd();
+                // M3：当前章整行铺 tonal 底（primaryContainer 的纸张色近似），其余清空
+                if (rsp.rdTocSelectedFill) {
+                    h.row.setBackground(on
+                            ? ModouUi.squircle(NativeReaderActivity.this,
+                                    ModouUi.alpha(theme.acc, 0x14), 10)
+                            : null);
+                }
                 h.title.setText(items[i]);
                 h.title.setSingleLine(sub2 == null);
                 h.title.setTextColor(on ? theme.acc : theme.text);
@@ -7472,6 +7710,6 @@ public class NativeReaderActivity extends Activity implements NativePageView.Hos
     }
 
     private void toast(String msg) {
-        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
+        ModouUi.toast(this, msg);
     }
 }
