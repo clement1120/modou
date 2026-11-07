@@ -372,7 +372,8 @@ public class ShelfActivity extends Activity {
             f.addView(shelfTitleBlock, tlp);
             f.addView(headBox);   // LayoutParams 由 buildHead() 设好
             shelfPane = f;
-            shelfInsetPx = ModouUi.dp(this, 48) + ModouUi.dp(this, sg.shelfTitleBlockDp);
+            // +20dp：书架大标题与首排书封之间的呼吸空间（用户反馈原间距顶得太上、不协调）
+            shelfInsetPx = ModouUi.dp(this, 48) + ModouUi.dp(this, sg.shelfTitleBlockDp) + ModouUi.dp(this, 20);
             // 吸顶头必须对齐到内容首行（让开 48dp 工具条 + 大标题块），否则会画在 y=48
             // 压在大「书架」标题上，造成「本」字叠到标题右上角的重影。
             stickyTopPx = shelfInsetPx;

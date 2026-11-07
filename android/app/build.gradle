@@ -18,6 +18,17 @@ android {
     namespace 'cn.modou.app'
     compileSdk 34
 
+    // 0.9.172 起固定用项目内密钥 modou.jks 签名（alias modou），保证各版本可互相覆盖更新。
+    // 之前误用系统 debug.keystore 会导致「签名不一致、无法覆盖安装」。
+    signingConfigs {
+        release {
+            storeFile file('../keystore/modou.jks')
+            storePassword 'modou2026'
+            keyAlias 'modou'
+            keyPassword 'modou2026'
+        }
+    }
+
     defaultConfig {
         applicationId 'cn.modou.app'
         // 0.9.138：设备池已全部 API 31+。窗口级实时模糊（Window.setBackgroundBlurRadius）
@@ -27,8 +38,10 @@ android {
         // 0.9.207：极简·纪视觉精修与去控件化 —— 阅读页顶部去圆底、底部工具栏单行
         // 透明极简排版 + 2dp 细线进度条、排版面板纯实色底 + 全文字胶囊（零滑杆零 Switch）、
         // 列表行去图标块/描边/阴影/分隔线、书架未读文案 11sp 深灰。仅 MONOLITH 生效。
-        versionCode 432
-        versionName "0.9.207"
+        // 0.9.208：统一全主题高阶占位封面（ModernPlaceholderDrawable，莫兰迪底 + 短横线 +
+        // 居中书名 + 左下角作者 + 底部进度条，按主题取色）；书架首排书封与标题间 +20dp 呼吸空间。
+        versionCode 433
+        versionName "0.9.208"
         // 分页算法版本（构建期注入 NativePageView.java 的内容哈希）：算法改动自动让旧页表失效
         buildConfigField "String", "PAGINATE_VER", "\"$paginateHash\""
     }
@@ -38,6 +51,7 @@ android {
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.release
         }
         debug {
             // 调试包也开 R8：用户装的、我们量的都是这个包，
