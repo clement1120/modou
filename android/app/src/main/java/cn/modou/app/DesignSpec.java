@@ -819,8 +819,15 @@ final class DesignSpec {
         onAccent = luminance(base) > 0.55f ? 0xFF14171C : 0xFFFFFFFF;
         container = alpha(base, 0x24);
         onContainer = base;
-        // 导航选中药丸（M3 active indicator）取的是 container 的快照，这里同步
-        if (navIndicatorColor != 0) navIndicatorColor = container;
+        // 导航选中药丸（0.9.209）：
+        // - M3 active indicator 取 container 快照，这里同步；
+        // - 极简（Monolith）药丸要「通透干净」：淡蓝 + 20% alpha，不再被 container 染成浑水；
+        // - 墨读（navIndicatorColor==0）保留各自默认，不在此覆盖。
+        if (lang == Lang.MATERIAL) {
+            navIndicatorColor = container;
+        } else if (lang == Lang.MONOLITH) {
+            navIndicatorColor = alpha(base, 0x33); // 淡蓝 + 20% alpha，叠加底栏不发灰发脏
+        }
         // 导航选中色与各自默认逻辑保持一致：M3 用 onContainer、iOS 用 accent
         if (lang == Lang.MATERIAL) navOnColor = onContainer;
         if (lang == Lang.MONOLITH) navOnColor = accent;
@@ -1341,7 +1348,7 @@ final class DesignSpec {
         menuHintSp = 14f;
         menuItemIconDp = 24;
         menuIconLeading = true;
-        menuDividerInsetDp = 0;               // M3 divider 通栏
+        menuDividerInsetDp = 20;              // 0.9.209：分割线左右缩进 20dp，与极简/Liquid 对齐
         menuStateLayer = alpha(text, 0x1A);   // 10% onSurface
         menuHighlight = alpha(container != 0 ? container : accent, 0x24);
         menuArrowDp = 0;

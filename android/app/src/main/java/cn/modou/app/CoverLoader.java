@@ -464,6 +464,9 @@ final class CoverLoader {
             title = StaticLayout.Builder.obtain(s, 0, s.length(), titlePaint, avail)
                     .setAlignment(Layout.Alignment.ALIGN_CENTER)
                     .setIncludePad(false)
+                    // 0.9.209：high_quality 断行，避免「百世修长生」在单字上弱智断行
+                    .setBreakStrategy(Layout.BREAK_STRATEGY_HIGH_QUALITY)
+                    .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
                     .setMaxLines(3)
                     .setEllipsize(android.text.TextUtils.TruncateAt.END)
                     .build();

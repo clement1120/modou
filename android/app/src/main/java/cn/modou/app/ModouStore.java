@@ -579,6 +579,12 @@ public class ModouStore extends SQLiteOpenHelper {
                         // 「最近阅读」排序要拿到真实的那一个时间
                         long ut = c.getLong(7);
                         if (ut > 0) o.put("updatedAt", ut);
+                        // 0.9.209：老 lite 可能写于 author 入列之前，缺字段导致占位封面不画作者，
+                        // 列是权威，缺失时回退列，保证书架作者名不失踪
+                        if (o.optString("author", "").isEmpty() && !c.isNull(3))
+                            o.put("author", c.getString(3));
+                        if (o.optString("name", "").isEmpty() && !c.isNull(2))
+                            o.put("name", c.getString(2));
                         arr.put(o);
                         continue;
                     } catch (Exception ignore) {

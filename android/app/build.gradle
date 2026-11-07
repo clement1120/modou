@@ -40,8 +40,10 @@ android {
         // 列表行去图标块/描边/阴影/分隔线、书架未读文案 11sp 深灰。仅 MONOLITH 生效。
         // 0.9.208：统一全主题高阶占位封面（ModernPlaceholderDrawable，莫兰迪底 + 短横线 +
         // 居中书名 + 左下角作者 + 底部进度条，按主题取色）；书架首排书封与标题间 +20dp 呼吸空间。
-        versionCode 433
-        versionName "0.9.208"
+        // 0.9.209：修复 5 个 Bug（占位封面作者失踪/书名弱智断行、弹出菜单高亮顶边/图标排布缺图标/
+        // 分割线无缩进、底栏选中药丸发灰发脏）。
+        versionCode 434
+        versionName "0.9.209"
         // 分页算法版本（构建期注入 NativePageView.java 的内容哈希）：算法改动自动让旧页表失效
         buildConfigField "String", "PAGINATE_VER", "\"$paginateHash\""
     }

@@ -568,7 +568,7 @@ final class CascadingMenu {
         if (t.contains("关于") || t.contains("帮助") || t.contains("说明") || t.contains("详情")) return ModouGlyph.INFO;
         if (t.contains("书签") || t.contains("收藏")) return ModouGlyph.BOOKMARK;
         if (t.contains("书源") || t.contains("书城")) return ModouGlyph.BOOK;
-        if (t.contains("网格") || t.contains("布局") || t.contains("视图")) return ModouGlyph.GRID;
+        if (t.contains("网格") || t.contains("布局") || t.contains("视图") || t.contains("排布")) return ModouGlyph.GRID;
         if (t.contains("返回") || t.contains("关闭") || t.contains("退出")) return ModouGlyph.CLOSE;
         if (t.contains("禁用") || t.contains("屏蔽")) return ModouGlyph.BLOCK;
         if (t.contains("拖动") || t.contains("拖动排序")) return ModouGlyph.DRAG;
@@ -727,8 +727,9 @@ final class CascadingMenu {
         card.setBackground(cardBackground(withArrow));
         // 上下内边距：三语言各自档位；iOS 主卡额外在箭头那一侧让出 arrowDp，
         // 保证凸出的三角有 bounds 空间、文字又不压到它。
-        int padTop = ModouUi.dp(host, spec.menuRowPadVDp + 4);
-        int padBottom = padTop;
+        // 0.9.209：面板顶部额外 10dp 内边距，让首个选中态高亮块不再顶到上边缘
+        int padTop = ModouUi.dp(host, spec.menuRowPadVDp + 4 + 10);
+        int padBottom = ModouUi.dp(host, spec.menuRowPadVDp + 4);
         if (withArrow && spec.menuPopoverArrow) {
             int extra = ModouUi.dp(host, spec.menuArrowDp);
             if (menuAbove) padBottom += extra; else padTop += extra;
