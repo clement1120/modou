@@ -1115,8 +1115,8 @@ public class LocalBooksActivity extends Activity {
         LinearLayout wrap = new LinearLayout(this);
         wrap.setOrientation(LinearLayout.VERTICAL);
         wrap.addView(row);
-        // 墨读 / M3：每行底部留 gap；iOS 连续分组各行紧贴，靠 0.5px 分隔线分节
-        int gap = sp.localRowStyle == 1 ? 0 : sp.localRowGapDp;
+        // 0.9.210：列表项之间至少 8dp 纵向间距（用户反馈卡片像一整块砖头贴在一起）
+        int gap = sp.localRowStyle == 1 ? 8 : Math.max(8, sp.localRowGapDp);
         wrap.setPadding(0, 0, 0, ModouUi.dp(this, gap));
         wrap.setTag(h);
         h.wrap = wrap;

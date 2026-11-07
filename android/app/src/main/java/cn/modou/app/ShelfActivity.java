@@ -2754,6 +2754,7 @@ public class ShelfActivity extends Activity {
         TextView badge;
         TextView name;
         TextView prog;
+        TextView author;
         /** 角标底层 drawable：复用时只 setColor，不重建 */
         android.graphics.drawable.GradientDrawable badgeBg;
     }
@@ -2926,9 +2927,10 @@ public class ShelfActivity extends Activity {
         cover.addView(badge, bp);
         l.addView(cover);
 
+        // 0.9.210：书名减小一个字号（用户反馈「柜子不够放」），三主题各降 1sp
         TextView name = ModouUi.tv(this, "",
-                ui.spec.material == DesignSpec.Material.TONAL ? 14f
-                        : ui.spec.material == DesignSpec.Material.LIQUID ? 13f : 12.5f, ui.text);
+                ui.spec.material == DesignSpec.Material.TONAL ? 13f
+                        : ui.spec.material == DesignSpec.Material.LIQUID ? 12f : 11.5f, ui.text);
         name.setTypeface(ui.spec.material == DesignSpec.Material.GLASS
                 ? Typeface.SERIF : Typeface.create("sans-serif-medium", Typeface.NORMAL),
                 ui.spec.material == DesignSpec.Material.GLASS ? Typeface.BOLD : Typeface.NORMAL);
@@ -2937,8 +2939,15 @@ public class ShelfActivity extends Activity {
         name.setMaxLines(2);
         name.setLineSpacing(ModouUi.dp(this, 1), 1.32f);
         name.setEllipsize(TextUtils.TruncateAt.END);
-        name.setPadding(0, ModouUi.dp(this, 7), 0, 0);
+        name.setPadding(ModouUi.dp(this, 2), ModouUi.dp(this, 7), 0, 0);
         l.addView(name);
+
+        // 0.9.210：作者名（之前书架卡完全没画作者，用户反馈「作者名还是不显示」）
+        TextView author = ModouUi.tv(this, "", 10f, ui.sub);
+        author.setSingleLine(true);
+        author.setEllipsize(TextUtils.TruncateAt.END);
+        author.setPadding(ModouUi.dp(this, 2), ModouUi.dp(this, 1), 0, 0);
+        l.addView(author);
 
         LinearLayout foot = new LinearLayout(this);
         foot.setOrientation(LinearLayout.HORIZONTAL);
@@ -2949,6 +2958,8 @@ public class ShelfActivity extends Activity {
                 monoCard ? (ui.spec.dark ? 0xFF9AA0B0 : 0xFF5A6070) : ui.sub);
         pv.setSingleLine(true);
         pv.setEllipsize(TextUtils.TruncateAt.END);
+        // 0.9.210：左侧留白，避免「未读 XX 章」首字「未」被卡片圆角裁掉
+        pv.setPadding(ModouUi.dp(this, 2), 0, 0, 0);
         foot.addView(pv, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         ImageView more = new ImageView(this);
         more.setImageDrawable(new ModouGlyph(ModouGlyph.MORE_H, ui.sub,
@@ -2970,6 +2981,7 @@ public class ShelfActivity extends Activity {
         h.badge = badge;
         h.name = name;
         h.prog = pv;
+        h.author = author;
         l.setTag(h);
         return l;
     }
@@ -2989,6 +3001,10 @@ public class ShelfActivity extends Activity {
         h.badge.setTextColor(local ? ui.sub : ui.accent);
         h.name.setText(b.optString("name", ""));
         h.prog.setText(progressText(b));
+        // 0.9.210：作者名（booksLite 已回退列，缺则空 → 隐藏该行，不留空位置）
+        String au = b.optString("author", "");
+        h.author.setText(au);
+        h.author.setVisibility(au.isEmpty() ? View.GONE : View.VISIBLE);
         String bid = b.optString("id", "");
         if (!bid.isEmpty()) cardProg.put(bid, h.prog); // 结构没变时靠这个原地刷新进度
     }

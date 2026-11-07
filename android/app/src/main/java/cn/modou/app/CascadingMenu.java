@@ -237,8 +237,11 @@ final class CascadingMenu {
             // 窗口尺寸精确等于卡片：模糊只作用于卡片背后的矩形，屏幕其余部分保持清晰。
             w.setGravity(Gravity.TOP | Gravity.LEFT);
             w.setLayout(mainW, mainH);
-            w.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);  // 不压暗，保持与底栏一致
-            w.setDimAmount(0f);
+            // 0.9.210：弹出时底层压暗 50%，把视觉焦点完全集中到菜单上（用户要求加遮罩）
+            w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            w.setDimAmount(0.5f);
+            // 圆角卡片投影，强调层级、不显脏
+            w.setElevation(ModouUi.dp(host, 12));
             // 非触摸模态 + 监听区外触摸：屏幕其余区域照常可点（书架可滚），
             // 但第一次区外触摸会以 ACTION_OUTSIDE 通知我们 → 关菜单（先收子菜单）。
             w.addFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
@@ -507,9 +510,14 @@ final class CascadingMenu {
             }
             case GLASS_ANCHOR:
             default: {
-                ModouGlassDrawable g = new ModouGlassDrawable(
-                        ModouUi.alpha(ui.card, 0x12), r, false);
-                g.setRimWidth(ModouUi.dp(host, spec.menuRimDp));
+                // 0.9.210：纯实色卡片，严禁半透明/毛玻璃——之前 0x12 alpha 玻璃让底层书名直接穿透菜单文字
+                GradientDrawable g = new GradientDrawable();
+                g.setColor(spec.menuSurface);       // 实色 surface（深色主题下即 #242731 一档）
+                g.setCornerRadius(r);
+                if (spec.menuRimLight != 0) {
+                    g.setStroke(Math.max(1, ModouUi.dp(host, spec.menuRimDp)),
+                            ModouUi.alpha(spec.menuRimLight, 0x59));
+                }
                 return g;
             }
         }
